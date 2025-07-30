@@ -1,0 +1,233 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "ARTIST - Agentic Tool-Integrated LLM",
+    "tags": ["artist", "ai", "workflows"],
+    "style": "dark",
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "System Overview",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "artist_system_info",
+            "legendFormat": "Version: {{version}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "displayMode": "list",
+              "orientation": "horizontal"
+            }
+          }
+        },
+        "gridPos": {
+          "h": 4,
+          "w": 24,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": 2,
+        "title": "Active Workflows",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "artist_active_workflows",
+            "legendFormat": "Active"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 10
+                },
+                {
+                  "color": "red",
+                  "value": 50
+                }
+              ]
+            }
+          }
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 6,
+          "x": 0,
+          "y": 4
+        }
+      },
+      {
+        "id": 3,
+        "title": "Workflow Executions Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(artist_workflow_executions_total[5m])",
+            "legendFormat": "{{workflow_id}} - {{status}}"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 9,
+          "x": 6,
+          "y": 4
+        }
+      },
+      {
+        "id": 4,
+        "title": "Workflow Success Rate",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "rate(artist_workflow_executions_total{status=\"success\"}[5m]) / rate(artist_workflow_executions_total[5m]) * 100",
+            "legendFormat": "Success Rate"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "thresholds": {
+              "steps": [
+                {
+                  "color": "red",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 80
+                },
+                {
+                  "color": "green",
+                  "value": 95
+                }
+              ]
+            }
+          }
+        },
+        "gridPos": {
+          "h": 6,
+          "w": 9,
+          "x": 15,
+          "y": 4
+        }
+      },
+      {
+        "id": 5,
+        "title": "Workflow Duration",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(artist_workflow_duration_seconds_bucket[5m]))",
+            "legendFormat": "95th percentile"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(artist_workflow_duration_seconds_bucket[5m]))",
+            "legendFormat": "50th percentile"
+          }
+        ],
+        "yAxes": [
+          {
+            "unit": "s"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 0,
+          "y": 10
+        }
+      },
+      {
+        "id": 6,
+        "title": "Agent Performance",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(artist_agent_executions_total[5m])",
+            "legendFormat": "{{agent_name}} - {{status}}"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 12,
+          "y": 10
+        }
+      },
+      {
+        "id": 7,
+        "title": "Tool Usage",
+        "type": "piechart",
+        "targets": [
+          {
+            "expr": "sum by (tool_name) (artist_tool_executions_total)",
+            "legendFormat": "{{tool_name}}"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 0,
+          "y": 16
+        }
+      },
+      {
+        "id": 8,
+        "title": "Feedback Submissions",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(artist_feedback_submissions_total[5m])",
+            "legendFormat": "{{feedback_type}}"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 8,
+          "y": 16
+        }
+      },
+      {
+        "id": 9,
+        "title": "RLHF Training",
+        "type": "table",
+        "targets": [
+          {
+            "expr": "artist_rlhf_training_cycles_total",
+            "legendFormat": "{{training_type}} - {{status}}"
+          }
+        ],
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 16,
+          "y": 16
+        }
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "30s"
+  }
+}

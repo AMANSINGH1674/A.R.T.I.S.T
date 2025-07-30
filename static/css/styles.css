@@ -1,0 +1,68 @@
+body {
+    font-family: sans-serif;
+    background-color: #121212;
+    color: #e0e0e0;
+    margin: 0;
+    padding: 20px;
+}
+
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 40px;
+}
+
+h1 {
+    color: #bb86fc;
+}
+
+.form-container, .status-container, .results-container {
+    background-color: #1e1e1e;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+}
+
+textarea {
+    width: 100%;
+    min-height: 100px;
+    background-color: #2c2c2c;
+    color: #e0e0e0;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 10px;
+    box-sizing: border-box;
+}
+
+button {
+    background-color: #bb86fc;
+    color: #121212;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 10px;
+}
+
+button:hover {
+    background-color: #3700b3;
+    color: #fff;
+}
+
+#status-updates p {
+    border-left: 3px solid #bb86fc;
+    padding-left: 10px;
+    margin: 10px 0;
+}
+
+pre {
+    background-color: #2c2c2c;
+    padding: 15px;
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}

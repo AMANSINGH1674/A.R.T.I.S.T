@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ARTIST - Agentic Tool-Integrated LLM</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ARTIST</h1>
+            <p>Agentic Tool-Integrated Large Language Model</p>
+        </header>
+        
+        <main>
+            <div class="form-container">
+                <form id="workflow-form">
+                    <textarea id="user-request" placeholder="Enter your request..."></textarea>
+                    <button type="submit">Execute Workflow</button>
+                </form>
+            </div>
+            
+            <div class="status-container">
+                <h2>Workflow Status</h2>
+                <div id="status-updates">
+                    <p><i>Workflow has not started yet.</i></p>
+                </div>
+            </div>
+            
+            <div class="results-container">
+                <h2>Results</h2>
+                <pre id="results-output"><code></code></pre>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/main.js"></script>
+</body>
+</html>
