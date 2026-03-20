@@ -1,109 +1,161 @@
 """
-Orchestration engine for managing and executing multi-agent workflows.
+Orchestration engine — cyclic LangGraph workflow with dynamic routing.
+
+Graph topology:
+                    ┌─────────────────────────────────────┐
+                    │  (confidence < 0.7 && iteration < 3) │
+                    ▼                                       │
+  planner ──► research ──► synthesis ──► fact_check ───────┘
+     │                                       │
+     │ (simple_factual)                      │ (approved / max iterations)
+     ▼                                       ▼
+  synthesis                            final_output ──► END
+
+Dynamic routing:
+  - PlannerAgent classifies query → simple_factual skips research
+  - FactCheckAgent sets confidence; if < 0.7 the graph cycles back to research
+  - Cycle is capped at 3 iterations to prevent infinite loops
 """
 
-import asyncio
 import structlog
-from typing import Dict, Any, List, Optional
-from uuid import uuid4
-import networkx as nx
+from typing import Dict, Any
+
 from langgraph.graph import StateGraph, END
 
-from ..config import settings
-from ..agents.base import BaseAgent
-from ..tools.base import BaseTool
+from ..agents.planner import PlannerAgent
+from ..agents.research import ResearchAgent
+from ..agents.synthesis import SynthesisAgent
+from ..agents.fact_check import FactCheckAgent
+from ..agents.final_output import FinalOutputAgent
 from ..knowledge.rag import RAGSystem
+from ..tools.web_search import DuckDuckGoSearchTool
 from .state import WorkflowState
 
 logger = structlog.get_logger()
 
+
+# ---------------------------------------------------------------------------
+# Routing functions — pure functions, no side effects
+# ---------------------------------------------------------------------------
+
+def _route_after_planner(state: WorkflowState) -> str:
+    """Route simple queries directly to synthesis; everything else through research."""
+    if state.get("route") == "simple_factual":
+        return "synthesis"
+    return "research"
+
+
+def _route_after_fact_check(state: WorkflowState) -> str:
+    """Cycle back to research if confidence is low and we haven't hit the cap."""
+    iterations = state.get("research_iteration_count", 0)
+    if iterations >= 3:
+        return "final_output"
+
+    fc = state.get("intermediate_results", {}).get("fact_check", {})
+    # Don't cycle when there were no sources to verify against
+    if fc.get("status") == "no_data":
+        return "final_output"
+
+    confidence = fc.get("confidence_score", 1.0)
+    if confidence < 0.7:
+        logger.info("Low confidence detected — cycling back to research", confidence=confidence, iteration=iterations)
+        return "research"
+
+    return "final_output"
+
+
+# ---------------------------------------------------------------------------
+# Engine
+# ---------------------------------------------------------------------------
+
 class OrchestrationEngine:
-    """Manages the lifecycle of multi-agent workflows"""
+    """Manages the cyclic multi-agent LangGraph workflow."""
 
     def __init__(self, rag_system: RAGSystem):
         self.rag_system = rag_system
-        self.workflows: Dict[str, StateGraph] = {}
-        self.running_workflows: Dict[str, Any] = {}
-        self.workflow_definitions: Dict[str, Any] = {}
+        self._agents: Dict[str, Any] = {}
+        self._compiled_graph = None
 
     async def initialize(self):
-        """Initializes the orchestration engine"""
         logger.info("Initializing orchestration engine...")
-        # Load workflow definitions from a configuration or database
-        self.load_workflow_definitions()
+        web_search_tool = DuckDuckGoSearchTool()
+        self._agents = {
+            "planner":      PlannerAgent(),
+            "research":     ResearchAgent(rag_system=self.rag_system, web_search_tool=web_search_tool),
+            "synthesis":    SynthesisAgent(),
+            "fact_check":   FactCheckAgent(),
+            "final_output": FinalOutputAgent(),
+        }
+        self._compiled_graph = self._build_graph()
+        logger.info("Orchestration engine ready — cyclic graph compiled")
 
     async def shutdown(self):
-        """Shuts down the orchestration engine"""
         logger.info("Shutting down orchestration engine...")
 
-    def load_workflow_definitions(self):
-        """Loads workflow definitions from a persistent store"""
-        # In a real application, this would load from a database or a configuration file
-        self.workflow_definitions = {
-            "default": {
-                "nodes": ["research", "synthesis", "fact_check", "final_output"],
-                "edges": [
-                    ("research", "synthesis"),
-                    ("synthesis", "fact_check"),
-                    ("fact_check", "final_output")
-                ],
-                "entry_point": "research",
-                "end_point": "final_output"
-            }
-        }
+    def _make_node(self, agent_name: str):
+        """Wrap an agent's execute() as an async LangGraph node."""
+        agent = self._agents[agent_name]
 
-    def create_workflow_graph(self, workflow_id: str, definition: Dict[str, Any]) -> StateGraph:
-        """Creates a LangGraph StateGraph from a workflow definition"""
+        async def node(state: WorkflowState) -> WorkflowState:
+            logger.info("Executing agent node", agent=agent_name)
+            return await agent.execute(state)
+
+        node.__name__ = agent_name
+        return node
+
+    def _build_graph(self):
+        """Build the cyclic StateGraph."""
         workflow = StateGraph(WorkflowState)
-        
-        # Add nodes to the graph
-        for node_name in definition["nodes"]:
-            workflow.add_node(node_name, self.create_agent_node(node_name))
-        
-        # Add edges to the graph
-        for start_node, end_node in definition["edges"]:
-            workflow.add_edge(start_node, end_node)
-            
-        # Set entry and end points
-        workflow.set_entry_point(definition["entry_point"])
-        workflow.add_edge(definition["end_point"], END)
-        
-        self.workflows[workflow_id] = workflow.compile()
-        return self.workflows[workflow_id]
 
-    def create_agent_node(self, agent_name: str):
-        """Creates a callable node for a given agent"""
-        def agent_node(state: WorkflowState) -> WorkflowState:
-            # This is a placeholder for the actual agent execution logic
-            # In a real implementation, this would involve loading the agent,
-            # passing the state, and executing the agent's logic
-            logger.info(f"Executing agent: {agent_name}")
-            # Simulate agent execution
-            # Update the state with the agent's output
-            state["history"].append(f"Agent {agent_name} executed successfully")
-            return state
-        return agent_node
+        # Register all agent nodes
+        for name in ("planner", "research", "synthesis", "fact_check", "final_output"):
+            workflow.add_node(name, self._make_node(name))
+
+        # Entry point
+        workflow.set_entry_point("planner")
+
+        # Planner → conditional fork
+        workflow.add_conditional_edges(
+            "planner",
+            _route_after_planner,
+            {
+                "synthesis": "synthesis",   # simple_factual shortcut
+                "research":  "research",    # full pipeline
+            },
+        )
+
+        # Linear edges through the pipeline
+        workflow.add_edge("research", "synthesis")
+        workflow.add_edge("synthesis", "fact_check")
+
+        # Fact-check → conditional (THE CYCLE or exit)
+        workflow.add_conditional_edges(
+            "fact_check",
+            _route_after_fact_check,
+            {
+                "research":     "research",      # cycle back for low confidence
+                "final_output": "final_output",  # approved or max iterations hit
+            },
+        )
+
+        # Terminal edge
+        workflow.add_edge("final_output", END)
+
+        return workflow.compile()
 
     async def execute_workflow(self, workflow_id: str, initial_state: WorkflowState) -> Dict[str, Any]:
-        """Executes a workflow with a given initial state"""
-        if workflow_id not in self.workflow_definitions:
-            raise ValueError(f"Workflow '{workflow_id}' not found")
-        
-        definition = self.workflow_definitions[workflow_id]
-        workflow_graph = self.create_workflow_graph(workflow_id, definition)
-        
-        run_id = str(uuid4())
-        self.running_workflows[run_id] = workflow_graph
-        
-        logger.info(f"Executing workflow '{workflow_id}' with run_id: {run_id}")
-        
-        final_state = await workflow_graph.ainvoke(initial_state)
-        
-        del self.running_workflows[run_id]
-        
+        if self._compiled_graph is None:
+            raise RuntimeError("OrchestrationEngine not initialized — call initialize() first")
+
+        logger.info("Executing cyclic workflow", workflow_id=workflow_id, run_id=initial_state.get("run_id"))
+        final_state = await self._compiled_graph.ainvoke(initial_state)
+        logger.info(
+            "Workflow completed",
+            status=final_state.get("status"),
+            iterations=final_state.get("research_iteration_count", 0),
+            route=final_state.get("route"),
+        )
         return final_state
 
     def health_check(self) -> bool:
-        """Health check for the orchestration engine"""
-        return True
-
+        return self._compiled_graph is not None

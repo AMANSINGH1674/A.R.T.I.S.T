@@ -72,6 +72,9 @@ def upgrade():
     )
     op.create_index(op.f('ix_workflow_executions_id'), 'workflow_executions', ['id'], unique=False)
     op.create_index(op.f('ix_workflow_executions_task_id'), 'workflow_executions', ['task_id'], unique=True)
+    # Indexes on FK columns for fast joins and lookups
+    op.create_index('ix_workflow_executions_workflow_id', 'workflow_executions', ['workflow_id'], unique=False)
+    op.create_index('ix_workflow_executions_user_id', 'workflow_executions', ['user_id'], unique=False)
     
     # Agent registry table
     op.create_table('agent_registry',
@@ -150,6 +153,8 @@ def downgrade():
     op.drop_index(op.f('ix_agent_registry_id'), table_name='agent_registry')
     op.drop_table('agent_registry')
     
+    op.drop_index('ix_workflow_executions_user_id', table_name='workflow_executions')
+    op.drop_index('ix_workflow_executions_workflow_id', table_name='workflow_executions')
     op.drop_index(op.f('ix_workflow_executions_task_id'), table_name='workflow_executions')
     op.drop_index(op.f('ix_workflow_executions_id'), table_name='workflow_executions')
     op.drop_table('workflow_executions')

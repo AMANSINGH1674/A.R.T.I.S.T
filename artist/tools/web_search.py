@@ -1,7 +1,12 @@
 """
 Web search tool for information retrieval from the internet.
+
+Two implementations:
+- WebSearchTool   — Google Custom Search API (requires GOOGLE_API_KEY)
+- DuckDuckGoSearchTool — DuckDuckGo (free, no API key required, used as default)
 """
 
+import asyncio
 from typing import Dict, Any, List
 import structlog
 import httpx
@@ -59,5 +64,41 @@ class WebSearchTool(BaseTool):
             return []
         except Exception as e:
             self.logger.error("An unexpected error occurred during web search", error=str(e))
+            return []
+
+
+class DuckDuckGoSearchTool(BaseTool):
+    """Web search using DuckDuckGo — free, no API key required."""
+
+    def __init__(self):
+        super().__init__(
+            name="duckduckgo_search",
+            description="Search the web using DuckDuckGo (no API key required)",
+        )
+
+    async def execute(self, query: str, num_results: int = 5) -> List[Dict[str, Any]]:
+        """Run DuckDuckGo text search in a thread pool (DDGS is synchronous)."""
+        self.logger.info("Executing DuckDuckGo search", query=query)
+        try:
+            from ddgs import DDGS
+
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(
+                None,
+                lambda: list(DDGS().text(query, max_results=num_results)),
+            )
+            formatted = [
+                {
+                    "title": r.get("title", ""),
+                    "link": r.get("href", ""),
+                    "snippet": r.get("body", ""),
+                    "source": "DuckDuckGo",
+                }
+                for r in results
+            ]
+            self.logger.info("DuckDuckGo search completed", num_results=len(formatted))
+            return formatted
+        except Exception as e:
+            self.logger.warning("DuckDuckGo search failed", error=str(e))
             return []
 

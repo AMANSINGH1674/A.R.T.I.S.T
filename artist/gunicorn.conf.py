@@ -45,7 +45,7 @@ raw_env = [
 
 # Server mechanics
 daemon = False
-pidfile = '/tmp/artist.pid'
+pidfile = os.getenv('GUNICORN_PID_FILE', '/var/run/artist/artist.pid')
 umask = 0
 user = None
 group = None

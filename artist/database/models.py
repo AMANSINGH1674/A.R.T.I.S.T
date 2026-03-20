@@ -118,6 +118,18 @@ class SystemMetrics(Base):
     labels = Column(JSON, default=dict)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
+class ConversationMemory(Base):
+    """Per-user conversation history for long-term memory injection."""
+    __tablename__ = "conversation_memory"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(100), index=True, nullable=False)
+    role = Column(String(20), nullable=False)   # "user" | "assistant"
+    content = Column(Text, nullable=False)
+    run_id = Column(String(100), index=True)    # links back to WorkflowExecution
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class AuditLog(Base):
     """Audit log for tracking system activities"""
     __tablename__ = "audit_logs"

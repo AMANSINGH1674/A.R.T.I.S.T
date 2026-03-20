@@ -4,11 +4,11 @@ Retrieval-Augmented Generation (RAG) system for knowledge retrieval.
 
 import structlog
 from typing import List, Dict, Any, Optional
-from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType
+from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
 from langchain_community.vectorstores import Milvus
-from langchain_openai import OpenAIEmbeddings
 
 from ..config import settings
+from ..llm.providers import get_embeddings
 
 logger = structlog.get_logger()
 
@@ -27,20 +27,24 @@ class RAGSystem:
         logger.info("Initializing RAG system...")
         try:
             connections.connect(host=self.milvus_host, port=self.milvus_port)
-            self.embeddings = OpenAIEmbeddings(openai_api_key=settings.openai_api_key)
+            self.embeddings = get_embeddings()
             self.create_collection_if_not_exists()
             logger.info("RAG system initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to connect to Milvus: {e}")
+            logger.error("Failed to connect to Milvus", error=str(e))
+            raise RuntimeError(f"RAG system initialization failed: {e}") from e
 
     async def shutdown(self):
         """Shuts down the RAG system and disconnects from the vector database"""
         logger.info("Shutting down RAG system...")
-        connections.disconnect()
+        try:
+            connections.disconnect("default")
+        except Exception:
+            pass
 
     def create_collection_if_not_exists(self):
         """Creates the Milvus collection if it doesn't already exist"""
-        if self.collection_name not in connections.list_collections():
+        if not utility.has_collection(self.collection_name):
             fields = [
                 FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
                 FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=1536),
@@ -80,8 +84,7 @@ class RAGSystem:
     def health_check(self) -> bool:
         """Health check for the RAG system"""
         try:
-            connections.get_connection_addr('default')
-            return True
+            return utility.get_server_version() is not None
         except Exception:
             return False
 

@@ -85,15 +85,23 @@ class TrainingOrchestrator(BaseTrainer):
 
     def _collect_feedback_from_db(self) -> List[HumanFeedback]:
         """Collect feedback from the database"""
-        # This is a simplified implementation. In a real system, you would have
-        # a more robust way of tracking and processing feedback.
         try:
             executions = self.db.query(WorkflowExecution).all()
             feedback_list = []
             for execution in executions:
-                if execution.metadata and 'feedback' in execution.metadata:
-                    for feedback_data in execution.metadata['feedback']:
+                metadata = execution.request_metadata or {}
+                raw_feedback = metadata.get("feedback")
+                if not raw_feedback or not isinstance(raw_feedback, list):
+                    continue
+                for feedback_data in raw_feedback:
+                    try:
                         feedback_list.append(HumanFeedback(**feedback_data))
+                    except Exception as parse_err:
+                        logger.warning(
+                            "Skipping malformed feedback entry",
+                            error=str(parse_err),
+                            execution_id=execution.id,
+                        )
             return feedback_list
         except Exception as e:
             logger.error("Failed to collect feedback from database", error=str(e))

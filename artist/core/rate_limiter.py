@@ -120,13 +120,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         # Skip rate limiting for health checks
-        if request.url.path.startswith("/health"):
+        if request.url.path.startswith("/health") or request.url.path.startswith("/api/v1/monitoring"):
             return await call_next(request)
 
-        # Get user identifier (IP or user ID)
+        # Prefer authenticated user ID over IP to avoid shared-proxy collisions
         user_id = getattr(request.state, "user_id", None)
-        client_ip = request.client.host
-        rate_limit_key = f"rate_limit:{user_id or client_ip}"
+        if user_id:
+            rate_limit_key = f"rate_limit:user:{user_id}"
+        else:
+            client_ip = request.client.host if request.client else "unknown"
+            rate_limit_key = f"rate_limit:ip:{client_ip}"
 
         # Check rate limit
         rate_limiter = RedisRateLimiter(

@@ -2,6 +2,7 @@
 Metrics collection and Prometheus integration.
 """
 
+import sys
 from prometheus_client import Counter, Histogram, Gauge, Info, CollectorRegistry, generate_latest
 import structlog
 from typing import Dict, Any
@@ -83,12 +84,24 @@ system_info = Info(
     registry=registry
 )
 
-# Set system info
-system_info.info({
-    'version': '1.0.0',
-    'python_version': '3.11',
-    'environment': 'production'
-})
+# Set system info dynamically
+def _init_system_info():
+    try:
+        from ..config import settings
+        system_info.info({
+            "version": settings.app_version,
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            "environment": settings.environment,
+        })
+    except Exception:
+        # Fallback if settings not yet loaded
+        system_info.info({
+            "version": "unknown",
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            "environment": "unknown",
+        })
+
+_init_system_info()
 
 
 class MetricsCollector:

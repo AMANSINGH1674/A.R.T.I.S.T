@@ -7,75 +7,71 @@ import structlog
 
 logger = structlog.get_logger()
 
-# Basic list of keywords that might indicate prompt injection
-# This should be expanded and customized for your specific use case
-INJECTION_KEYWORDS = [
-    "ignore the above",
-    "forget the previous instructions",
-    "new instructions",
-    "system prompt",
-    "security context",
-    "user role",
-    "hack",
-    "exploit",
-    "malicious",
-    "confidential"
+# Phrases commonly used in prompt injection attacks.
+# Each entry is a separate pattern compiled individually so a bad pattern
+# in one keyword never breaks the others.
+_INJECTION_PHRASES = [
+    r"ignore\s+(?:the\s+)?(?:above|previous|prior|all)\s+instructions?",
+    r"forget\s+(?:the\s+)?(?:above|previous|prior|all)\s+instructions?",
+    r"disregard\s+(?:the\s+)?(?:above|previous|prior|all)\s+instructions?",
+    r"override\s+(?:the\s+)?(?:above|previous|prior|all)\s+instructions?",
+    r"new\s+instructions?(?:\s*:)?",
+    r"you\s+are\s+now\s+(?:a\s+)?(?:different|new|another)",
+    r"act\s+as\s+(?:if\s+)?(?:you\s+(?:are|were)|an?\s+)",
+    r"pretend\s+(?:you\s+are|to\s+be)",
+    r"your\s+(?:new\s+)?(?:system\s+)?prompt\s+is",
+    r"system\s*(?:prompt|message|instruction)",
+    r"jailbreak",
+    r"dan\s+mode",
+    r"developer\s+mode",
 ]
 
-# Regular expression to detect potential injection patterns
-INJECTION_REGEX = re.compile(
-    r"(\b|\W)(\s*)" + "|\\b".join(INJECTION_KEYWORDS) + r"(\b|\W)",
-    re.IGNORECASE
-)
+# Compile each phrase individually; collect those that are valid
+_COMPILED_PATTERNS: list[re.Pattern] = []
+for _phrase in _INJECTION_PHRASES:
+    try:
+        _COMPILED_PATTERNS.append(re.compile(_phrase, re.IGNORECASE))
+    except re.error as _e:
+        logger.warning("Failed to compile injection pattern", pattern=_phrase, error=str(_e))
 
 
 def is_prompt_injection(prompt: str) -> bool:
+    """Check for potential prompt injection patterns.
+
+    Returns True if any known injection pattern is found.
     """
-    Check for potential prompt injection attacks.
-    
-    Args:
-        prompt (str): The user's prompt.
-    
-    Returns:
-        bool: True if potential injection is detected, False otherwise.
-    """
-    if INJECTION_REGEX.search(prompt):
-        logger.warning("Potential prompt injection detected", prompt=prompt)
-        return True
+    for pattern in _COMPILED_PATTERNS:
+        if pattern.search(prompt):
+            logger.warning(
+                "Potential prompt injection detected",
+                matched_pattern=pattern.pattern,
+                # Log only first 200 chars to avoid leaking full malicious content
+                prompt_preview=prompt[:200],
+            )
+            return True
     return False
 
 
 def sanitize_prompt(prompt: str) -> str:
+    """Replace injection patterns with a placeholder.
+
+    Should be treated as a best-effort defence — always validate at the
+    application boundary, not just here.
     """
-    Sanitize a prompt to remove potential injection patterns.
-    This is a basic implementation and should be used with caution.
-    
-    Args:
-        prompt (str): The user's prompt.
-    
-    Returns:
-        str: The sanitized prompt.
-    """
-    sanitized = INJECTION_REGEX.sub(" [filtered] ", prompt)
+    sanitized = prompt
+    for pattern in _COMPILED_PATTERNS:
+        sanitized = pattern.sub("[filtered]", sanitized)
     if sanitized != prompt:
-        logger.info("Sanitized prompt", original_prompt=prompt, sanitized_prompt=sanitized)
+        logger.info("Prompt sanitized", original_length=len(prompt), sanitized_length=len(sanitized))
     return sanitized
 
 
 class PromptGuardMiddleware:
-    """
-    Middleware to protect against prompt injection.
-    Note: This is a conceptual middleware. In a real FastAPI application,
-    this would be integrated into the request processing pipeline.
-    """
-    
+    """ASGI middleware stub — prompt checking is done inside the workflow
+    endpoint before the request reaches the orchestration engine."""
+
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            # You can inspect the request body here to check for prompts
-            # This requires more complex logic to parse the body of different requests
-            pass
-        
         await self.app(scope, receive, send)

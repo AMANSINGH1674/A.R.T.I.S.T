@@ -1,0 +1,46 @@
+# Secrets — never bake these into an image
+.env
+.env.*
+!.env.example
+
+# Version control
+.git
+.gitignore
+
+# Python artifacts
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+test_results.log
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Local dev artifacts
+*.log
+models/
+logs/
+
+# Docs (not needed in image)
+docs/

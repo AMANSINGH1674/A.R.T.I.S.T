@@ -6,8 +6,9 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel, Field
 import structlog
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from ..database.session import get_db
 from ..database.models import User, WorkflowExecution, AuditLog
@@ -49,15 +50,22 @@ class FeedbackService:
             if not workflow_execution:
                 raise HTTPException(status_code=404, detail="Workflow execution not found")
             
-            # Store feedback in a JSON field for now
-            if not workflow_execution.request_metadata.get('feedback'):
-                workflow_execution.request_metadata['feedback'] = []
-            
-            feedback_data = feedback.__dict__
-            feedback_data['user_id'] = user['id']
-            feedback_data['timestamp'] = datetime.utcnow().isoformat()
-            
-            workflow_execution.request_metadata['feedback'].append(feedback_data)
+            # Mutating a JSON column in-place is not tracked by SQLAlchemy —
+            # reassign the whole dict and call flag_modified so the change is flushed.
+            metadata = dict(workflow_execution.request_metadata or {})
+            existing_feedback = list(metadata.get("feedback") or [])
+
+            feedback_data = {
+                k: (v.value if hasattr(v, "value") else v)
+                for k, v in feedback.__dict__.items()
+            }
+            feedback_data["user_id"] = user["id"]
+            feedback_data["timestamp"] = datetime.now(timezone.utc).isoformat()
+
+            existing_feedback.append(feedback_data)
+            metadata["feedback"] = existing_feedback
+            workflow_execution.request_metadata = metadata
+            flag_modified(workflow_execution, "request_metadata")
             
             # Log the feedback
             audit_log = AuditLog(

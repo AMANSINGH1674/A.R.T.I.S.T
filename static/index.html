@@ -1,40 +1,579 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ARTIST - Agentic Tool-Integrated LLM</title>
-    <link rel="stylesheet" href="/static/css/styles.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ARTIST — Agentic AI</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d0d0f;
+      --surface: #16161a;
+      --surface2: #1e1e24;
+      --border: #2a2a32;
+      --accent: #7c6af7;
+      --accent2: #56cfb2;
+      --danger: #f97070;
+      --warn: #f5a623;
+      --text: #e8e8f0;
+      --muted: #8888a0;
+      --radius: 12px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* LOGIN */
+    #login-screen { width: 380px; display: flex; flex-direction: column; gap: 24px; }
+    .logo { text-align: center; }
+    .logo h1 {
+      font-size: 2rem; font-weight: 700;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      letter-spacing: 4px;
+    }
+    .logo p { color: var(--muted); font-size: 0.85rem; margin-top: 6px; }
+
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 28px;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+
+    label { font-size: 0.8rem; color: var(--muted); display: block; margin-bottom: 6px; }
+
+    input[type=text], input[type=password], textarea {
+      width: 100%; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); padding: 10px 14px;
+      font-size: 0.9rem; outline: none; transition: border-color 0.2s;
+    }
+    input:focus, textarea:focus { border-color: var(--accent); }
+
+    .btn {
+      padding: 11px 20px; border-radius: 8px; border: none;
+      font-size: 0.9rem; font-weight: 600; cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { opacity: 0.88; }
+    .btn-ghost { background: var(--surface2); color: var(--text); }
+    .btn-ghost:hover { opacity: 0.8; }
+    .btn-sm { padding: 6px 14px; font-size: 0.8rem; }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+
+    .error-msg { color: var(--danger); font-size: 0.82rem; text-align: center; min-height: 18px; }
+
+    /* MAIN APP */
+    #app-screen { display: none; width: 100vw; height: 100vh; flex-direction: column; }
+
+    .topbar {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 14px 24px; display: flex; align-items: center;
+      justify-content: space-between; flex-shrink: 0;
+    }
+    .topbar .brand {
+      font-weight: 700; font-size: 1.1rem;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      letter-spacing: 3px;
+    }
+    .topbar-right { display: flex; align-items: center; gap: 12px; }
+    .topbar .username { color: var(--muted); font-size: 0.85rem; }
+
+    /* UPLOAD PANEL */
+    #upload-panel {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7); z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    #upload-panel.open { display: flex; }
+    .upload-box {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 32px; width: 460px;
+      display: flex; flex-direction: column; gap: 20px;
+    }
+    .upload-box h3 { font-size: 1.1rem; }
+    .upload-box p { color: var(--muted); font-size: 0.85rem; line-height: 1.6; }
+    .drop-zone {
+      border: 2px dashed var(--border); border-radius: 10px;
+      padding: 32px; text-align: center; cursor: pointer;
+      transition: border-color 0.2s; color: var(--muted); font-size: 0.9rem;
+    }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); color: var(--text); }
+    .upload-status { font-size: 0.85rem; min-height: 20px; }
+    .upload-status.ok { color: var(--accent2); }
+    .upload-status.err { color: var(--danger); }
+    .upload-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+    /* CHAT */
+    .chat-container {
+      flex: 1; overflow-y: auto; padding: 24px;
+      display: flex; flex-direction: column; gap: 20px;
+      max-width: 860px; width: 100%; margin: 0 auto;
+    }
+
+    .empty-state {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 12px; color: var(--muted); text-align: center;
+    }
+    .empty-state .big { font-size: 3rem; }
+    .empty-state h2 { font-size: 1.3rem; color: var(--text); }
+    .empty-state p { font-size: 0.88rem; max-width: 440px; line-height: 1.6; }
+
+    .message { display: flex; flex-direction: column; gap: 8px; }
+
+    .msg-user {
+      align-self: flex-end; background: var(--accent); color: #fff;
+      padding: 12px 16px; border-radius: 18px 18px 4px 18px;
+      max-width: 70%; font-size: 0.92rem; line-height: 1.5; white-space: pre-wrap;
+    }
+
+    .msg-agent { align-self: flex-start; max-width: 85%; display: flex; flex-direction: column; gap: 10px; }
+
+    .thinking {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px 20px;
+      display: flex; align-items: center; gap: 12px;
+      font-size: 0.88rem; color: var(--muted);
+    }
+    .dots span {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent); margin: 0 2px; animation: bounce 1.2s infinite;
+    }
+    .dots span:nth-child(2) { animation-delay: 0.2s; }
+    .dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+      0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+      30% { transform: translateY(-5px); opacity: 1; }
+    }
+
+    .result-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden; width: 100%;
+    }
+    .result-summary { padding: 20px; font-size: 0.93rem; line-height: 1.75; color: var(--text); }
+    .result-summary p { margin-bottom: 10px; }
+    .result-summary p:last-child { margin-bottom: 0; }
+
+    .result-meta {
+      border-top: 1px solid var(--border); padding: 12px 20px;
+      display: flex; gap: 8px; flex-wrap: wrap; background: var(--surface2);
+    }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 10px; border-radius: 20px;
+      font-size: 0.75rem; font-weight: 600;
+    }
+    .badge-green  { background: #1a3a2a; color: var(--accent2); }
+    .badge-yellow { background: #3a2e10; color: var(--warn); }
+    .badge-red    { background: #3a1010; color: var(--danger); }
+    .badge-purple { background: #1e1a3a; color: var(--accent); }
+    .badge-blue   { background: #0f1e3a; color: #6ab4f5; }
+
+    .result-section { border-top: 1px solid var(--border); padding: 14px 20px; }
+    .result-section h4 {
+      font-size: 0.73rem; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px;
+    }
+
+    .key-points { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+    .key-points li {
+      font-size: 0.88rem; padding-left: 18px; position: relative;
+      color: var(--text); line-height: 1.5;
+    }
+    .key-points li::before { content: "→"; position: absolute; left: 0; color: var(--accent2); }
+
+    .concerns { display: flex; flex-direction: column; gap: 6px; }
+    .concern-item {
+      font-size: 0.85rem; color: var(--warn);
+      padding-left: 18px; position: relative; line-height: 1.4;
+    }
+    .concern-item::before { content: "!"; position: absolute; left: 0; font-weight: 700; }
+
+    .sources-list { display: flex; flex-direction: column; gap: 4px; }
+    .source-link {
+      font-size: 0.8rem; color: #6ab4f5; text-decoration: none;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .source-link:hover { text-decoration: underline; }
+
+    .error-card {
+      background: #1e0f0f; border: 1px solid #3a1010;
+      border-radius: var(--radius); padding: 16px 20px;
+      color: var(--danger); font-size: 0.88rem;
+    }
+
+    /* INPUT */
+    .input-bar {
+      border-top: 1px solid var(--border); padding: 16px 24px 20px;
+      background: var(--surface); flex-shrink: 0;
+    }
+    .input-inner { max-width: 860px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
+    .input-inner textarea {
+      flex: 1; resize: none; min-height: 46px; max-height: 140px;
+      line-height: 1.5; padding: 12px 14px;
+      font-family: inherit; font-size: 0.93rem;
+    }
+    .send-btn {
+      width: 46px; height: 46px; border-radius: 10px; border: none;
+      background: var(--accent); color: #fff; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: opacity 0.2s; font-size: 1.2rem;
+    }
+    .send-btn:hover { opacity: 0.85; }
+    .send-btn:disabled { opacity: 0.3; cursor: default; }
+    .input-hint { color: var(--muted); font-size: 0.75rem; text-align: center; margin-top: 8px; }
+
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>ARTIST</h1>
-            <p>Agentic Tool-Integrated Large Language Model</p>
-        </header>
-        
-        <main>
-            <div class="form-container">
-                <form id="workflow-form">
-                    <textarea id="user-request" placeholder="Enter your request..."></textarea>
-                    <button type="submit">Execute Workflow</button>
-                </form>
-            </div>
-            
-            <div class="status-container">
-                <h2>Workflow Status</h2>
-                <div id="status-updates">
-                    <p><i>Workflow has not started yet.</i></p>
-                </div>
-            </div>
-            
-            <div class="results-container">
-                <h2>Results</h2>
-                <pre id="results-output"><code></code></pre>
-            </div>
-        </main>
-    </div>
 
-    <script src="/static/js/main.js"></script>
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="logo">
+    <h1>ARTIST</h1>
+    <p>Agentic Tool-Integrated Research &amp; Intelligence System</p>
+  </div>
+  <div class="card">
+    <div>
+      <label>Username</label>
+      <input type="text" id="username" placeholder="admin" autocomplete="username" />
+    </div>
+    <div>
+      <label>Password</label>
+      <input type="password" id="password" placeholder="••••••••" autocomplete="current-password" />
+    </div>
+    <button class="btn btn-primary" id="login-btn" onclick="login()">Sign in</button>
+    <div class="error-msg" id="login-error"></div>
+  </div>
+</div>
+
+<!-- UPLOAD PANEL -->
+<div id="upload-panel">
+  <div class="upload-box">
+    <h3>Upload Document to Knowledge Base</h3>
+    <p>Upload a PDF, TXT, or MD file. It will be chunked, embedded, and indexed — making it searchable in all future queries.</p>
+    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()"
+         ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">
+      <div style="font-size:2rem;margin-bottom:8px">📄</div>
+      <div>Click to browse or drag &amp; drop</div>
+      <div style="font-size:0.78rem;margin-top:6px;color:var(--muted)">PDF · TXT · MD · Max 20 MB</div>
+    </div>
+    <input type="file" id="file-input" accept=".pdf,.txt,.md" style="display:none" onchange="uploadFile(this.files[0])"/>
+    <div class="upload-status" id="upload-status"></div>
+    <div class="upload-actions">
+      <button class="btn btn-ghost btn-sm" onclick="closeUpload()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="app-screen">
+  <div class="topbar">
+    <span class="brand">ARTIST</span>
+    <div class="topbar-right">
+      <button class="btn btn-ghost btn-sm" onclick="openUpload()">📄 Upload Doc</button>
+      <span class="username" id="display-user"></span>
+      <button class="btn btn-ghost btn-sm" onclick="logout()">Sign out</button>
+    </div>
+  </div>
+
+  <div class="chat-container" id="chat">
+    <div class="empty-state" id="empty-state">
+      <div class="big">🧠</div>
+      <h2>Ask anything</h2>
+      <p>ARTIST classifies your query, runs parallel web + knowledge-base research, synthesises an answer, and fact-checks it — automatically routing through the right agents.</p>
+      <p style="margin-top:8px;font-size:0.8rem">Upload documents via the button above to search your own knowledge base.</p>
+    </div>
+  </div>
+
+  <div class="input-bar">
+    <div class="input-inner">
+      <textarea id="question-input" placeholder="Ask a question…" rows="1"
+        onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+      <button class="send-btn" id="send-btn" onclick="submitQuestion()" title="Send">&#9658;</button>
+    </div>
+    <div class="input-hint">Enter to send &nbsp;·&nbsp; Shift+Enter for new line</div>
+  </div>
+</div>
+
+<script>
+  let token = localStorage.getItem('artist_token');
+  let currentUser = localStorage.getItem('artist_user');
+  let isWaiting = false;
+
+  if (token) showApp();
+
+  // ── Auth ──────────────────────────────────────
+  async function login() {
+    const btn = document.getElementById('login-btn');
+    const err = document.getElementById('login-error');
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+    if (!username || !password) { err.textContent = 'Fill in both fields.'; return; }
+    btn.disabled = true; btn.textContent = 'Signing in…'; err.textContent = '';
+    try {
+      const res = await fetch('/api/v1/auth/login', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({username, password})
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Login failed');
+      token = data.access_token; currentUser = username;
+      localStorage.setItem('artist_token', token);
+      localStorage.setItem('artist_user', username);
+      showApp();
+    } catch(e) { err.textContent = e.message; }
+    finally { btn.disabled = false; btn.textContent = 'Sign in'; }
+  }
+
+  function showApp() {
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('app-screen').style.display = 'flex';
+    document.getElementById('display-user').textContent = currentUser || 'user';
+    document.getElementById('question-input').focus();
+  }
+
+  function logout() {
+    localStorage.removeItem('artist_token'); localStorage.removeItem('artist_user');
+    token = null;
+    document.getElementById('app-screen').style.display = 'none';
+    document.getElementById('login-screen').style.display = 'flex';
+    document.getElementById('login-error').textContent = '';
+  }
+
+  document.getElementById('password').addEventListener('keydown', e => { if(e.key==='Enter') login(); });
+
+  // ── Upload ────────────────────────────────────
+  function openUpload() { document.getElementById('upload-panel').classList.add('open'); }
+  function closeUpload() {
+    document.getElementById('upload-panel').classList.remove('open');
+    document.getElementById('file-input').value = '';
+    setUploadStatus('', '');
+  }
+
+  function onDragOver(e) { e.preventDefault(); document.getElementById('drop-zone').classList.add('drag-over'); }
+  function onDragLeave()  { document.getElementById('drop-zone').classList.remove('drag-over'); }
+  function onDrop(e) {
+    e.preventDefault(); onDragLeave();
+    const file = e.dataTransfer.files[0];
+    if (file) uploadFile(file);
+  }
+
+  function setUploadStatus(msg, cls) {
+    const el = document.getElementById('upload-status');
+    el.textContent = msg; el.className = 'upload-status ' + cls;
+  }
+
+  async function uploadFile(file) {
+    if (!file) return;
+    setUploadStatus('Uploading and indexing…', '');
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch('/api/v1/knowledge/upload', {
+        method: 'POST', headers: {'Authorization': `Bearer ${token}`}, body: fd
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Upload failed');
+      setUploadStatus(`✓ Indexed ${data.chunks_indexed} chunks from "${data.filename}"`, 'ok');
+    } catch(e) {
+      setUploadStatus('✗ ' + e.message, 'err');
+    }
+  }
+
+  // ── Chat ──────────────────────────────────────
+  function handleKey(e) { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); submitQuestion(); } }
+  function autoResize(el) { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,140)+'px'; }
+
+  function removeEmpty() { const e=document.getElementById('empty-state'); if(e) e.remove(); }
+  function scrollBottom() { const c=document.getElementById('chat'); c.scrollTop=c.scrollHeight; }
+
+  function appendUserMsg(text) {
+    removeEmpty();
+    const chat = document.getElementById('chat');
+    const div = document.createElement('div');
+    div.className = 'message';
+    div.innerHTML = `<div class="msg-user">${esc(text)}</div>`;
+    chat.appendChild(div); scrollBottom();
+  }
+
+  function appendThinking() {
+    const chat = document.getElementById('chat');
+    const div = document.createElement('div');
+    div.className = 'message msg-agent'; div.id = 'thinking-el';
+    div.innerHTML = `<div class="thinking">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span id="thinking-label">Planning route…</span></div>`;
+    chat.appendChild(div); scrollBottom();
+  }
+
+  function setThinkingLabel(t) { const el=document.getElementById('thinking-label'); if(el) el.textContent=t; }
+  function removeThinking() { const el=document.getElementById('thinking-el'); if(el) el.remove(); }
+
+  function appendResult(data) {
+    const chat = document.getElementById('chat');
+    const div = document.createElement('div');
+    div.className = 'message msg-agent';
+
+    const result = data.result || data;
+    const ir = result.intermediate_results || {};
+
+    // Prefer structured final_output; fall back to raw intermediate_results
+    const fo = result.final_output || {};
+    const synthesis = ir.synthesis || {};
+    const factCheck = ir.fact_check || {};
+    const resMeta   = ir.research   || {};
+
+    const summary      = fo.summary      || synthesis.summary || 'No answer generated.';
+    const keyPoints    = fo.key_points   || synthesis.key_points || [];
+    const confidence   = fo.confidence   !== undefined ? fo.confidence : factCheck.confidence_score;
+    const verified     = fo.verified     !== undefined ? fo.verified   : factCheck.verified;
+    const recommendation = fo.recommendation || factCheck.recommendation;
+    const concerns     = fo.concerns     || factCheck.concerns || [];
+    const sources      = fo.sources      || [];
+    const meta         = fo.metadata     || {};
+
+    // Badges
+    let badges = '';
+    if (confidence !== undefined) {
+      const pct = Math.round(confidence * 100);
+      const cls = pct >= 80 ? 'badge-green' : pct >= 60 ? 'badge-yellow' : 'badge-red';
+      badges += `<span class="badge ${cls}">${pct >= 80 ? '✓' : '~'} ${pct}% confidence</span>`;
+    }
+    if (verified !== undefined)
+      badges += verified ? `<span class="badge badge-green">✓ Verified</span>`
+                         : `<span class="badge badge-yellow">~ Unverified</span>`;
+    if (recommendation) {
+      const cls = recommendation === 'approved' ? 'badge-green'
+                : recommendation === 'rejected' ? 'badge-red' : 'badge-yellow';
+      badges += `<span class="badge ${cls}">${recommendation}</span>`;
+    }
+    if (meta.route_taken) {
+      const routeLabel = {simple_factual:'⚡ Direct', complex_research:'🔍 Research', code:'💻 Code'}[meta.route_taken] || meta.route_taken;
+      badges += `<span class="badge badge-purple">${routeLabel}</span>`;
+    }
+    if (meta.kb_results_found || meta.web_results_found) {
+      badges += `<span class="badge badge-blue">KB: ${meta.kb_results_found||0} · Web: ${meta.web_results_found||0}</span>`;
+    }
+    if (meta.research_iterations > 1)
+      badges += `<span class="badge badge-yellow">↺ ${meta.research_iterations} iterations</span>`;
+
+    // Key points
+    const kpHtml = keyPoints.length
+      ? `<div class="result-section"><h4>Key Points</h4><ul class="key-points">
+          ${keyPoints.map(p=>`<li>${esc(p)}</li>`).join('')}</ul></div>`
+      : '';
+
+    // Concerns
+    const cHtml = concerns.length
+      ? `<div class="result-section"><h4>Concerns</h4><div class="concerns">
+          ${concerns.map(c=>`<div class="concern-item">${esc(c)}</div>`).join('')}</div></div>`
+      : '';
+
+    // Sources
+    const srcHtml = sources.length
+      ? `<div class="result-section"><h4>Sources</h4><div class="sources-list">
+          ${sources.map(s=>`<a class="source-link" href="${esc(s)}" target="_blank" rel="noopener">${esc(s)}</a>`).join('')}
+         </div></div>`
+      : '';
+
+    div.innerHTML = `
+      <div class="result-card">
+        <div class="result-summary">${fmt(summary)}</div>
+        ${kpHtml}${cHtml}${srcHtml}
+        ${badges ? `<div class="result-meta">${badges}</div>` : ''}
+      </div>`;
+
+    chat.appendChild(div); scrollBottom();
+  }
+
+  function appendError(msg) {
+    const chat = document.getElementById('chat');
+    const div = document.createElement('div');
+    div.className = 'message msg-agent';
+    div.innerHTML = `<div class="error-card">⚠ ${esc(msg)}</div>`;
+    chat.appendChild(div); scrollBottom();
+  }
+
+  // ── Submit ────────────────────────────────────
+  async function submitQuestion() {
+    if (isWaiting) return;
+    const input = document.getElementById('question-input');
+    const q = input.value.trim();
+    if (!q) return;
+
+    isWaiting = true;
+    document.getElementById('send-btn').disabled = true;
+    input.value = ''; input.style.height = 'auto';
+    appendUserMsg(q);
+    appendThinking();
+
+    const steps = ['Planning route…', 'Researching (web + KB)…', 'Synthesising…', 'Fact-checking…', 'Finalising…'];
+    let si = 0;
+    const iv = setInterval(() => { si = (si+1) % steps.length; setThinkingLabel(steps[si]); }, 3000);
+
+    try {
+      const res = await fetch('/api/v1/workflow/execute', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json', 'Authorization': `Bearer ${token}`},
+        body: JSON.stringify({user_request: q})
+      });
+      if (res.status === 401) { logout(); return; }
+      if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Submit failed'); }
+      const {task_id} = await res.json();
+      const result = await poll(task_id);
+      clearInterval(iv); removeThinking();
+      result.status === 'failed' ? appendError(result.error || 'Workflow failed') : appendResult(result);
+    } catch(e) {
+      clearInterval(iv); removeThinking(); appendError(e.message);
+    } finally {
+      isWaiting = false;
+      document.getElementById('send-btn').disabled = false;
+      input.focus();
+    }
+  }
+
+  async function poll(taskId, maxMs = 120000) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < maxMs) {
+      await new Promise(r => setTimeout(r, 2500));
+      const res = await fetch(`/api/v1/workflow/result/${taskId}`,
+        {headers: {'Authorization': `Bearer ${token}`}});
+      if (res.status === 404) continue;
+      if (res.status === 401) { logout(); throw new Error('Session expired'); }
+      if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.detail || 'Error fetching result'); }
+      return res.json();
+    }
+    throw new Error('Timed out after 2 minutes');
+  }
+
+  // ── Utils ─────────────────────────────────────
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function fmt(text) {
+    return esc(text)
+      .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g,'<em>$1</em>')
+      .replace(/\n\n+/g,'</p><p style="margin-top:10px">')
+      .replace(/\n/g,'<br>')
+      .replace(/^/,'<p>').replace(/$/,'</p>');
+  }
+</script>
 </body>
 </html>

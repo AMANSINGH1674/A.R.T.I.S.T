@@ -2,8 +2,7 @@
 Simple reward model implementation for RLHF.
 """
 
-import json
-import pickle
+import joblib
 from typing import Dict, Any, List, Tuple
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
@@ -102,35 +101,27 @@ class SimpleRewardModel(BaseRewardModel):
             raise
 
     async def save(self, path: str):
-        """Save the reward model"""
+        """Save the reward model using joblib (safe for sklearn objects)"""
         try:
             model_data = {
-                'model': self.model,
-                'vectorizer': self.vectorizer,
-                'is_trained': self.is_trained
+                "model": self.model,
+                "vectorizer": self.vectorizer,
+                "is_trained": self.is_trained,
             }
-            
-            with open(path, 'wb') as f:
-                pickle.dump(model_data, f)
-            
+            joblib.dump(model_data, path)
             logger.info("Reward model saved", path=path)
-        
         except Exception as e:
             logger.error("Error saving reward model", error=str(e))
             raise
 
     async def load(self, path: str):
-        """Load the reward model"""
+        """Load the reward model using joblib"""
         try:
-            with open(path, 'rb') as f:
-                model_data = pickle.load(f)
-            
-            self.model = model_data['model']
-            self.vectorizer = model_data['vectorizer']
-            self.is_trained = model_data['is_trained']
-            
+            model_data = joblib.load(path)
+            self.model = model_data["model"]
+            self.vectorizer = model_data["vectorizer"]
+            self.is_trained = model_data["is_trained"]
             logger.info("Reward model loaded", path=path)
-        
         except Exception as e:
             logger.error("Error loading reward model", error=str(e))
             raise

@@ -2,20 +2,22 @@
 Authentication and authorization management for ARTIST.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
-import jwt
-from passlib.context import CryptContext
+import bcrypt
+from jose import jwt, JWTError, ExpiredSignatureError
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
 import structlog
 
 from ..config import settings
+from ..database.session import get_db
+from ..database.models import User
 
 logger = structlog.get_logger()
 
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
 
 class AuthManager:
     """Manages authentication and authorization"""
@@ -27,36 +29,33 @@ class AuthManager:
 
     def verify_password(self, plain_password: str, hashed_password: str) -> bool:
         """Verify a password against its hash"""
-        return pwd_context.verify(plain_password, hashed_password)
+        return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
 
     def get_password_hash(self, password: str) -> str:
         """Generate a password hash"""
-        return pwd_context.hash(password)
+        return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
     def create_access_token(self, data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
         """Create a JWT access token"""
         to_encode = data.copy()
-        if expires_delta:
-            expire = datetime.utcnow() + expires_delta
-        else:
-            expire = datetime.utcnow() + timedelta(minutes=self.access_token_expire_minutes)
-        
+        expire = datetime.now(timezone.utc) + (
+            expires_delta if expires_delta else timedelta(minutes=self.access_token_expire_minutes)
+        )
         to_encode.update({"exp": expire})
-        encoded_jwt = jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
-        return encoded_jwt
+        return jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
 
     def verify_token(self, token: str) -> Dict[str, Any]:
         """Verify and decode a JWT token"""
         try:
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
             return payload
-        except jwt.ExpiredSignatureError:
+        except ExpiredSignatureError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token has expired",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        except jwt.JWTError:
+        except JWTError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",
@@ -67,36 +66,52 @@ class AuthManager:
         """Health check for the authentication manager"""
         return True
 
-    async def authenticate_user(self, username: str, password: str) -> Optional[Dict[str, Any]]:
-        """Authenticate a user (placeholder implementation)"""
-        # In a real implementation, this would query a user database
-        # This is a simple placeholder for demonstration
-        if username == "admin" and password == "password":
-            return {
-                "username": username,
-                "email": "admin@artist.ai",
-                "roles": ["admin"],
-                "permissions": ["read", "write", "execute"]
-            }
-        return None
+    async def authenticate_user(
+        self, username: str, password: str, db: Session
+    ) -> Optional[Dict[str, Any]]:
+        """Authenticate a user against the database"""
+        user: Optional[User] = db.query(User).filter(User.username == username).first()
+        if not user:
+            return None
+        if not user.is_active:
+            return None
+        if not self.verify_password(password, user.hashed_password):
+            return None
+        return {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "roles": user.roles or [],
+            "is_superuser": user.is_superuser,
+        }
 
-    async def get_current_user(self, token: str) -> Dict[str, Any]:
-        """Get the current user from a token"""
+    async def get_current_user(self, token: str, db: Session) -> Dict[str, Any]:
+        """Get the current user from a JWT token, verified against the database"""
         payload = self.verify_token(token)
-        username = payload.get("sub")
+        username: Optional[str] = payload.get("sub")
         if username is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        
-        # In a real implementation, this would fetch user details from a database
+
+        user: Optional[User] = db.query(User).filter(User.username == username).first()
+        if user is None or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found or inactive",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         return {
-            "username": username,
-            "email": f"{username}@artist.ai",
-            "roles": ["user"],
-            "permissions": ["read", "execute"]
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "roles": user.roles or [],
+            "is_superuser": user.is_superuser,
         }
 
 
@@ -105,6 +120,9 @@ auth_manager = AuthManager()
 security = HTTPBearer()
 
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
     """FastAPI dependency to get current user from JWT token"""
-    return await auth_manager.get_current_user(credentials.credentials)
+    return await auth_manager.get_current_user(credentials.credentials, db)

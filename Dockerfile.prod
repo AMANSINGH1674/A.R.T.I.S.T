@@ -1,47 +1,87 @@
-# Stage 1: Build stage
-FROM python:3.11-slim as builder
+# Production multi-stage Dockerfile
+# Stage 1 — build: compiles wheels so the final image has no build tools
+# Stage 2 — runtime: minimal image, non-root user, no secrets baked in
 
-WORKDIR /app
+# ── Stage 1: build ───────────────────────────────────────────────────────────
+FROM python:3.11-slim AS builder
 
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+WORKDIR /build
 
-# Install build dependencies
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install only the compile-time tools; they stay in this stage only
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential gcc
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install poetry
-RUN pip install poetry
+# Upgrade pip
+RUN pip install --upgrade pip
 
-# Copy project files and install dependencies
-COPY poetry.lock pyproject.toml ./
-RUN poetry config virtualenvs.create false && \
-    poetry install --no-dev --no-interaction --no-ansi
+# Copy requirements and install everything (including all transitive deps)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# ----------------------------------------------------------------
 
-# Stage 2: Final stage
-FROM python:3.11-slim
+# ── Stage 2: runtime ─────────────────────────────────────────────────────────
+FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
-# Create a non-root user
-RUN addgroup --system artist && adduser --system --group artist
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    # Sane umask: owner rw, group r, others nothing
+    UMASK=0027
 
-# Copy installed dependencies from builder
-COPY --from=builder /app/ /app/
+# Runtime system deps only (curl for healthcheck, no build tools)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy application code
-COPY ./artist /app/artist
+# Create dedicated non-root user and group before any COPY --chown
+RUN groupadd --system --gid 1001 artist && \
+    useradd --system --uid 1001 --gid artist \
+            --no-create-home --shell /sbin/nologin artist
 
-# Set ownership
-RUN chown -R artist:artist /app
+# Copy fully-installed Python packages from builder — no compiler needed here
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Switch to non-root user
+# Copy application source
+COPY --chown=artist:artist ./artist      /app/artist
+COPY --chown=artist:artist ./migrations  /app/migrations
+COPY --chown=artist:artist ./alembic.ini /app/alembic.ini
+
+# Ensure static dir exists; copy files if present
+RUN mkdir -p /app/static
+COPY --chown=artist:artist ./static /app/static
+
+# Create runtime directories the app needs:
+#   /var/run/artist  — gunicorn PID file
+#   /app/models      — RLHF reward model persistence
+#   /app/logs        — optional file logging
+RUN mkdir -p /var/run/artist /app/models /app/logs && \
+    chown -R artist:artist /var/run/artist /app/models /app/logs
+
+# Drop to non-root
 USER artist
 
-# Expose port
 EXPOSE 8000
 
-# Run the application
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "artist/gunicorn.conf.py", "artist.main:app"]
+# Gunicorn will write its PID here; override at runtime if needed
+ENV GUNICORN_PID_FILE=/var/run/artist/artist.pid
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Use gunicorn + uvicorn workers; config file controls worker count, timeouts, etc.
+CMD ["gunicorn", \
+     "--config", "artist/gunicorn.conf.py", \
+     "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "artist.main:app"]
