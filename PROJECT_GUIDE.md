@@ -1,6 +1,6 @@
 # A.R.T.I.S.T — Complete Project Guide
 
-**Agentic Tool-Integrated Large Language Model**
+**Agentic Tool-Integrated Research & Intelligence System**
 
 Everything you need to understand, run, extend, and debug this project.
 
@@ -30,14 +30,13 @@ Everything you need to understand, run, extend, and debug this project.
 
 ## 1. What Is This?
 
-ARTIST is a **multi-agent orchestration platform**. You give it a plain-English request like *"Research the latest trends in AI and write a summary"* and it:
+ARTIST is a **multi-agent AI orchestration platform**. You give it a plain-English request and it:
 
-1. Breaks the work into steps
-2. Assigns each step to a specialised AI agent
-3. Runs those agents in sequence (or in parallel)
-4. Returns a verified, synthesised result
-
-Think of it as an AI assembly line. Instead of one model doing everything, multiple specialised agents each do one thing well, pass their output to the next, and the final result is better than any single model could produce alone.
+1. **Classifies** the query and decides which agents to run
+2. **Researches** in parallel — searching both a vector knowledge base and the live web simultaneously
+3. **Synthesises** findings into a coherent answer, injecting your conversation history for continuity
+4. **Fact-checks** the answer against the source documents — and cycles back to research if confidence is too low
+5. **Returns** a structured result with confidence score, source URLs, verification status, and route metadata
 
 It is built to be **enterprise-grade**: authenticated, rate-limited, audited, monitored, containerised, and self-improving via human feedback (RLHF).
 
@@ -46,38 +45,58 @@ It is built to be **enterprise-grade**: authenticated, rate-limited, audited, mo
 ## 2. How It Works — The Big Picture
 
 ```
-User Request
-     │
-     ▼
-┌─────────────┐     JWT Auth      ┌──────────────┐
-│  FastAPI    │ ◄────────────────► │  PostgreSQL  │
-│  REST API   │                   │  (users, DB) │
-└──────┬──────┘                   └──────────────┘
-       │  enqueues task
+User Query
+    │
+    ▼
+┌─────────────┐     JWT Auth      ┌──────────────────────┐
+│  FastAPI    │ ◄───────────────► │  PostgreSQL           │
+│  REST API   │                   │  users, executions,   │
+└──────┬──────┘                   │  conversation_memory  │
+       │ enqueues task            └──────────────────────┘
        ▼
 ┌─────────────┐
-│   Celery    │  (async task queue via Redis)
-│   Worker   │
+│   Celery    │  async task queue via Redis
+│   Worker    │  retrieves conversation history before running
 └──────┬──────┘
-       │  runs workflow
+       │ runs workflow
        ▼
-┌──────────────────────────────────────┐
-│         Orchestration Engine         │
-│  (LangGraph StateGraph)              │
-│                                      │
-│  Research → Synthesis → FactCheck    │
-│     │            │           │       │
-│     ▼            ▼           ▼       │
-│  RAG/Milvus   LLM Call   Scoring     │
-└──────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│              Orchestration Engine (LangGraph)             │
+│                                                          │
+│  ┌─────────┐                                             │
+│  │ Planner │ classifies: simple_factual / complex /code  │
+│  └────┬────┘                                             │
+│       │                                                  │
+│  ┌────▼────┐  asyncio.gather()                           │
+│  │Research │  ├─ KB Search  (Milvus)   ─┐               │
+│  │  Agent  │  └─ Web Search (DuckDuckGo)┘ merged        │
+│  └────┬────┘                                             │
+│       │                                                  │
+│  ┌────▼──────┐  + conversation history injected          │
+│  │ Synthesis │  LLM call (Groq / Anthropic / NIM)        │
+│  └────┬──────┘                                           │
+│       │                                                  │
+│  ┌────▼──────┐  confidence < 0.7? ──► loop back          │
+│  │FactCheck  │  (max 3 iterations)                       │
+│  └────┬──────┘                                           │
+│       │ approved                                         │
+│  ┌────▼────────┐                                         │
+│  │FinalOutput  │  structured: summary, sources,          │
+│  │   Agent     │  confidence, verified, metadata         │
+│  └─────────────┘                                         │
+└──────────────────────────────────────────────────────────┘
        │
        ▼
-  Final Result  ──►  Prometheus Metrics
-                 ──►  LangSmith Traces
-                 ──►  Human Feedback (RLHF)
+  Result stored in Redis ──► client polls ──► result delivered
+  Conversation turn saved to PostgreSQL for next session
 ```
 
-**Key insight:** The API returns immediately with a `task_id`. The actual work happens asynchronously in a Celery worker. The client polls `/workflow/status/{task_id}` and eventually calls `/workflow/result/{task_id}`.
+**Key behaviours:**
+- API returns a `task_id` immediately — the work runs async in Celery
+- The graph is **cyclic** — low confidence routes back to research (up to 3 times)
+- **Simple questions** skip research entirely (planner routes directly to synthesis)
+- **Conversation history** is stored in PostgreSQL and injected into every new session
+- **Parallel research** — KB and web search run simultaneously via `asyncio.gather`
 
 ---
 
@@ -86,25 +105,25 @@ User Request
 ### Tech Stack
 
 | Layer | Technology | Why |
-|-------|-----------|-----|
-| API Framework | FastAPI | Async-native, automatic OpenAPI docs, Pydantic validation |
-| Workflow Orchestration | LangGraph | Stateful multi-agent graphs, conditional branching |
-| Task Queue | Celery + Redis | Long-running workflows don't block the API |
-| Database | PostgreSQL + SQLAlchemy | Audit logs, user management, workflow history |
-| Vector Database | Milvus | Stores document embeddings for RAG search |
-| Object Storage | MinIO | Stores files that Milvus needs (S3-compatible) |
-| Embeddings | OpenAI `text-embedding-ada-002` | Converts text to vectors for semantic search |
-| Auth | JWT (HS256) + bcrypt | Stateless tokens, secure password storage |
+|---|---|---|
+| API Framework | FastAPI | Async-native, Pydantic validation, automatic OpenAPI |
+| Workflow Orchestration | LangGraph `StateGraph` | Stateful cyclic graphs, conditional edge routing |
+| Task Queue | Celery + Redis | Long workflows don't block the API |
+| Relational DB | PostgreSQL + SQLAlchemy | Users, executions, conversation memory |
+| Vector DB | Milvus | Semantic search over uploaded documents |
+| Object Storage | MinIO | Milvus backing store (S3-compatible) |
+| LLM Providers | Groq / Anthropic / NIM / OpenAI | Switchable via env var |
+| Web Search | DuckDuckGo (free) / Google CSE (optional) | Live web results, no API key required for DDG |
+| Embeddings | NVIDIA NIM `nv-embedqa-e5-v5` / OpenAI | Converts text to vectors |
+| Auth | JWT (python-jose) + bcrypt | Stateless tokens, secure passwords |
 | Metrics | Prometheus + Grafana | Real-time performance dashboards |
-| Tracing | LangSmith | Debug LLM calls, token usage, latency |
-| Logging | structlog | Structured JSON logs, easy to query in ELK/Datadog |
-| Code Execution | Docker sandbox | Runs user-submitted Python safely in an isolated container |
-| ML (RLHF) | scikit-learn + joblib | RandomForest reward model trained on human feedback |
-| Production Server | Gunicorn + Uvicorn workers | Multi-process, handles concurrent requests |
+| Tracing | LangSmith | Debug LLM calls and agent traces |
+| Logging | structlog | Structured JSON logs |
+| Code Execution | Docker sandbox | Isolated, memory-limited Python execution |
+| ML (RLHF) | scikit-learn + joblib | RandomForest reward model from human feedback |
+| Production Server | Gunicorn + Uvicorn workers | Multi-process, concurrent requests |
 
 ### Middleware Stack (request order)
-
-Every HTTP request passes through these layers before hitting an endpoint:
 
 ```
 Incoming Request
@@ -113,13 +132,13 @@ Incoming Request
 LoggingMiddleware       — logs method, path, status, duration, user_id
       │
       ▼
-SecurityMiddleware      — decodes JWT (if present), sets request.state.user_id
-      │                   adds security headers (X-Frame-Options, HSTS, etc.)
+SecurityMiddleware      — decodes JWT, sets request.state.user_id
+      │                   adds security headers (HSTS, X-Frame-Options, etc.)
       ▼
-RateLimitMiddleware     — checks Redis: user has not exceeded rate limit
+RateLimitMiddleware     — checks Redis: user under rate limit
       │
       ▼
-Endpoint Function       — FastAPI route, enforces auth via Depends(get_current_user)
+Endpoint Function       — enforces auth via Depends(get_current_user)
       │
       ▼
 Response
@@ -131,311 +150,331 @@ Response
 
 ```
 A.R.T.I.S.T/
-├── artist/                     # All application code
-│   ├── main.py                 # App entry point, middleware, router registration
-│   ├── config.py               # All settings, read from environment variables
-│   ├── gunicorn.conf.py        # Production server configuration
+├── artist/
+│   ├── main.py                      # App entry point, middleware, router registration
+│   ├── config.py                    # All settings read from environment variables
+│   ├── gunicorn.conf.py             # Production server configuration
 │   │
-│   ├── api/                    # HTTP layer
-│   │   ├── middleware.py       # Security headers, logging, JWT extraction
-│   │   ├── exceptions.py       # Custom error types and handlers
+│   ├── api/
+│   │   ├── middleware.py            # Logging, security headers, JWT extraction
+│   │   ├── exceptions.py            # Custom error types and handlers
 │   │   └── endpoints/
-│   │       ├── auth.py         # POST /login, GET /profile, POST /logout
-│   │       ├── workflow.py     # POST /execute, GET /status, GET /result
-│   │       ├── agents.py       # GET /list, GET /{name}, GET /{name}/status
-│   │       ├── tools.py        # GET /list, GET /{name}, GET /{name}/status
-│   │       ├── monitoring.py   # GET /health, GET /metrics, GET /status
-│   │       └── rlhf.py         # POST /train, GET /training/status, POST /feedback
+│   │       ├── auth.py              # POST /login, GET /profile, POST /logout
+│   │       ├── workflow.py          # POST /execute, GET /status, GET /result
+│   │       ├── knowledge.py         # POST /upload, GET /stats  ← document ingestion
+│   │       ├── agents.py            # GET /list, GET /{name}/status
+│   │       ├── tools.py             # GET /list, GET /{name}/status
+│   │       ├── monitoring.py        # GET /health, GET /metrics, GET /status
+│   │       └── rlhf.py              # POST /feedback, POST /train
 │   │
-│   ├── orchestration/          # Workflow execution engine
-│   │   ├── engine.py           # OrchestrationEngine — builds and runs LangGraph graphs
-│   │   └── state.py            # WorkflowState TypedDict — shared state between agents
+│   ├── orchestration/
+│   │   ├── engine.py                # Cyclic LangGraph StateGraph with conditional edges
+│   │   └── state.py                 # WorkflowState TypedDict — all shared agent data
 │   │
-│   ├── agents/                 # The AI workers
-│   │   ├── base.py             # BaseAgent abstract class
-│   │   ├── research.py         # Searches knowledge base via RAG
-│   │   ├── synthesis.py        # Combines and summarises retrieved documents
-│   │   └── fact_check.py       # Scores and verifies synthesised output
+│   ├── agents/
+│   │   ├── base.py                  # BaseAgent abstract class
+│   │   ├── planner.py               # Classifies query → routes workflow dynamically
+│   │   ├── research.py              # Parallel KB + web search via asyncio.gather
+│   │   ├── synthesis.py             # LLM synthesis with conversation history injection
+│   │   ├── fact_check.py            # LLM-based fact verification against sources
+│   │   └── final_output.py          # Assembles structured final response
 │   │
-│   ├── tools/                  # Capabilities agents can use
-│   │   ├── base.py             # BaseTool abstract class
-│   │   ├── code_execution.py   # Runs Python in Docker sandbox
-│   │   └── web_search.py       # Google Custom Search API
+│   ├── tools/
+│   │   ├── base.py                  # BaseTool abstract class
+│   │   ├── web_search.py            # DuckDuckGoSearchTool + WebSearchTool (Google CSE)
+│   │   └── code_execution.py        # Docker-sandboxed Python execution
 │   │
 │   ├── knowledge/
-│   │   └── rag.py              # RAGSystem — Milvus vector search + OpenAI embeddings
-│   │
-│   ├── security/
-│   │   ├── auth.py             # AuthManager — JWT creation/verification, DB user lookup
-│   │   ├── rbac.py             # Role hierarchy, require_roles decorator
-│   │   ├── prompt_guard.py     # Prompt injection detection and sanitisation
-│   │   └── sandbox.py          # SecureCodeSandbox — Docker-based Python execution
-│   │
-│   ├── database/
-│   │   ├── models.py           # SQLAlchemy ORM models
-│   │   └── session.py          # DB engine, SessionLocal, get_db dependency
+│   │   └── rag.py                   # RAGSystem — Milvus vector store, add_documents, search
 │   │
 │   ├── core/
-│   │   ├── logging_config.py   # structlog setup
-│   │   ├── rate_limiter.py     # Redis token-bucket rate limiter + circuit breaker
-│   │   └── registries.py       # Dynamic agent/tool loading from DB
+│   │   ├── memory.py                # MemoryService — PostgreSQL conversation history
+│   │   ├── logging_config.py        # structlog setup
+│   │   ├── rate_limiter.py          # Redis token-bucket rate limiter + circuit breaker
+│   │   └── registries.py            # Dynamic agent/tool loading
+│   │
+│   ├── llm/
+│   │   └── providers.py             # get_llm() — Groq / Anthropic / NIM / OpenAI factory
+│   │
+│   ├── security/
+│   │   ├── auth.py                  # JWT + bcrypt — create/verify tokens, DB user lookup
+│   │   ├── rbac.py                  # Role hierarchy, require_roles decorator
+│   │   ├── prompt_guard.py          # Prompt injection detection
+│   │   └── sandbox.py               # SecureCodeSandbox — Docker-based execution
+│   │
+│   ├── database/
+│   │   ├── models.py                # SQLAlchemy ORM models (incl. ConversationMemory)
+│   │   └── session.py               # DB engine, SessionLocal, get_db dependency
 │   │
 │   ├── observability/
-│   │   ├── metrics.py          # Prometheus counters, histograms, gauges
-│   │   └── langsmith.py        # LangSmith tracing integration
+│   │   ├── metrics.py               # Prometheus counters, histograms, gauges
+│   │   └── langsmith.py             # LangSmith tracing integration
 │   │
-│   ├── rlhf/                   # Reinforcement Learning from Human Feedback
-│   │   ├── base.py             # Data classes: HumanFeedback, RewardSignal, etc.
-│   │   ├── feedback.py         # API endpoint + service for collecting feedback
-│   │   ├── reward_model.py     # TF-IDF + RandomForest reward model (sklearn)
-│   │   └── trainer.py          # Orchestrates training cycles
+│   ├── rlhf/
+│   │   ├── base.py                  # Data classes: HumanFeedback, RewardSignal
+│   │   ├── feedback.py              # Feedback collection API + service
+│   │   ├── reward_model.py          # TF-IDF + RandomForest reward model
+│   │   └── trainer.py               # Orchestrates training cycles
 │   │
 │   └── worker/
-│       ├── celery_app.py       # Celery app config (broker=Redis)
-│       └── tasks.py            # execute_workflow_task — the async Celery task
-│
-├── migrations/
-│   ├── env.py                  # Alembic runtime config (reads DATABASE_URL)
-│   └── versions/
-│       └── 0001_initial_schema.py  # Creates all tables + indexes
-│
-├── tests/
-│   ├── conftest.py             # Sets test env vars before imports
-│   └── test_basic.py           # Unit tests for all major components
+│       ├── celery_app.py            # Celery config (broker = Redis)
+│       └── tasks.py                 # execute_workflow_task — memory retrieval + workflow
 │
 ├── static/
-│   └── index.html              # Simple web UI
+│   └── index.html                   # Single-page UI (login, chat, document upload)
 │
-├── grafana/
-│   └── artist-dashboard.json   # Pre-built Grafana dashboard
+├── migrations/
+│   ├── env.py                       # Alembic runtime config
+│   └── versions/
+│       └── 0001_initial_schema.py   # Creates all tables + indexes
 │
-├── k8s/
-│   └── deployment.yaml         # Kubernetes deployment manifest
+├── tests/
+│   ├── conftest.py                  # Sets test env vars before imports
+│   └── test_basic.py                # Unit tests for all major components
 │
-├── scripts/
-│   ├── setup.py                # Dev setup script (venv, DB, Docker)
-│   └── start.sh                # Simple startup script
-│
-├── docker-compose.yml          # Full local stack (app + all services)
-├── Dockerfile                  # Dev image
-├── Dockerfile.prod             # Production multi-stage image
-├── .dockerignore               # Excludes secrets and build artifacts
-├── alembic.ini                 # Alembic migration config
-├── requirements.txt            # Python dependencies
-├── .env.example                # Template for .env — copy and fill in
-└── PROJECT_GUIDE.md            # This file
+├── docker-compose.yml               # Full local stack — 7 services
+├── Dockerfile                       # Dev image
+├── Dockerfile.prod                  # Production multi-stage image
+├── .dockerignore                    # Excludes secrets and build artifacts
+├── alembic.ini                      # Alembic migration config
+├── requirements.txt                 # Python dependencies
+├── .env.example                     # Template for .env
+└── PROJECT_GUIDE.md                 # This file
 ```
 
 ---
 
 ## 5. Every Component Explained
 
-### OrchestrationEngine (`artist/orchestration/engine.py`)
+### PlannerAgent (`artist/agents/planner.py`)
 
-The brain of the system. It:
-- Loads **workflow definitions** (currently hardcoded in `load_workflow_definitions()`, extensible to DB)
-- Builds a **LangGraph `StateGraph`** from the definition — nodes are agents, edges are the execution order
-- Calls `workflow_graph.ainvoke(initial_state)` to run the graph asynchronously
-- Returns the final `WorkflowState` after all agents have run
+The first agent every request hits. It calls the LLM with a deterministic prompt (`temperature=0.0`) to classify the query into one of three routes:
 
-The default workflow is: `research → synthesis → fact_check → final_output`
+| Route | Meaning | Graph path |
+|---|---|---|
+| `simple_factual` | Short factual question (PM of India, capital of France) | planner → synthesis (skips research) |
+| `complex_research` | Needs multiple sources, synthesis, verification | planner → research → synthesis → fact_check |
+| `code` | Code writing, debugging, or explanation | planner → research → synthesis → fact_check |
 
-### WorkflowState (`artist/orchestration/state.py`)
-
-A Python `TypedDict` that acts as the **shared blackboard** passed between agents. Every agent reads from it and writes back to it. Key fields:
-
-| Field | Type | Purpose |
-|-------|------|---------|
-| `user_request` | str | The original user prompt |
-| `retrieved_documents` | list | Documents found by ResearchAgent |
-| `intermediate_results` | dict | Each agent stores its output here keyed by name |
-| `completed_steps` | list | Agents append their name when done |
-| `errors` | list | Any agent failures are recorded here |
-| `status` | str | `running`, `completed`, `failed` |
-| `history` | list | Human-readable log of what happened |
+This is where the latency savings for simple queries come from — they skip the research and fact-check steps entirely.
 
 ### ResearchAgent (`artist/agents/research.py`)
 
-- Receives `WorkflowState`
-- Calls `RAGSystem.search(user_request, k=10)` to find relevant documents in Milvus
-- Stores results in `state["retrieved_documents"]`
-- Records summary in `state["intermediate_results"]["research"]`
+Runs **two searches simultaneously** using `asyncio.gather`:
+
+1. **KB Search** — semantic similarity search over Milvus (your uploaded documents)
+2. **Web Search** — DuckDuckGo live results (no API key required)
+
+Results from both are merged and deduplicated by source URL. On re-search iterations (when fact-check cycles back), the query is refined using the specific concerns raised by the fact-checker.
 
 ### SynthesisAgent (`artist/agents/synthesis.py`)
 
-- Reads `state["retrieved_documents"]` (set by ResearchAgent)
-- Combines top-5 document texts into a summary
-- In production this would use an LLM call — currently uses a simple concatenation as a placeholder
-- Outputs a `confidence_score` and `key_points`
+- Reads `retrieved_documents` (from ResearchAgent) and `conversation_history` (from PostgreSQL)
+- Injects conversation history as `HumanMessage` / `AIMessage` pairs before the current question — giving the LLM context from past sessions
+- If no documents found: answers directly from LLM knowledge
+- If documents found: builds a context string (capped at ~6000 chars) and synthesises across sources
 
 ### FactCheckAgent (`artist/agents/fact_check.py`)
 
-- Reads `state["intermediate_results"]["synthesis"]`
-- Computes a fact-check score based on number of sources and confidence
-- Returns `verified: true/false`, a `recommendation` (`approved` / `needs_review`), and any `concerns`
+- Calls the LLM with the synthesis summary and original source documents
+- Expects a JSON response: `{verified, confidence_score, concerns, unsupported_claims, recommendation}`
+- **Increments `research_iteration_count`** — this counter is what the engine uses to decide whether to cycle back or exit
+- Falls back to a heuristic score if the LLM returns malformed JSON
+
+### FinalOutputAgent (`artist/agents/final_output.py`)
+
+Assembles the final structured response from all intermediate results:
+
+```json
+{
+  "summary": "...",
+  "key_points": ["..."],
+  "confidence": 0.88,
+  "verified": true,
+  "concerns": [],
+  "unsupported_claims": [],
+  "recommendation": "approved",
+  "sources": ["https://..."],
+  "metadata": {
+    "route_taken": "complex_research",
+    "research_iterations": 1,
+    "kb_results_found": 2,
+    "web_results_found": 5,
+    "total_sources": 7
+  }
+}
+```
+
+### OrchestrationEngine (`artist/orchestration/engine.py`)
+
+Builds and runs the cyclic LangGraph `StateGraph`:
+
+```python
+# Conditional routing functions (pure Python, no side effects)
+def _route_after_planner(state) -> str:
+    return "synthesis" if state["route"] == "simple_factual" else "research"
+
+def _route_after_fact_check(state) -> str:
+    if state["research_iteration_count"] >= 3: return "final_output"
+    if state["intermediate_results"]["fact_check"]["confidence_score"] < 0.7:
+        return "research"   # ← THE CYCLE
+    return "final_output"
+```
+
+The cycle is capped at 3 iterations to prevent infinite loops. On each iteration, the ResearchAgent refines its query based on the fact-checker's concerns.
+
+### WorkflowState (`artist/orchestration/state.py`)
+
+A Python `TypedDict` — the shared blackboard passed between every agent.
+
+| Field | Type | Set by |
+|---|---|---|
+| `user_request` | str | Initial state |
+| `route` | str | PlannerAgent |
+| `research_iteration_count` | int | FactCheckAgent (incremented each pass) |
+| `kb_results` | list | ResearchAgent |
+| `web_results` | list | ResearchAgent |
+| `retrieved_documents` | list | ResearchAgent (merged) |
+| `conversation_history` | list | Injected from PostgreSQL before workflow starts |
+| `intermediate_results` | dict | Each agent writes its output here |
+| `final_output` | dict | FinalOutputAgent |
+| `errors` | list | Any agent on failure |
+| `status` | str | `running` → `completed` / `failed` |
+
+### MemoryService (`artist/core/memory.py`)
+
+Reads and writes per-user conversation history to the `conversation_memory` PostgreSQL table.
+
+- **Before** the workflow: retrieves the last 6 turns (3 user + 3 assistant) and injects them into `WorkflowState.conversation_history`
+- **After** the workflow: saves the new user question + assistant summary as two new rows
+
+This is what makes the system remember context across separate sessions.
+
+### LLM Providers (`artist/llm/providers.py`)
+
+`get_llm()` returns a LangChain `BaseChatModel` for whichever provider is configured:
+
+```
+DEFAULT_LLM_PROVIDER=groq      → ChatOpenAI(base_url="https://api.groq.com/openai/v1")
+DEFAULT_LLM_PROVIDER=anthropic → ChatAnthropic()
+DEFAULT_LLM_PROVIDER=nim       → ChatOpenAI(base_url="https://integrate.api.nvidia.com/v1")
+DEFAULT_LLM_PROVIDER=openai    → ChatOpenAI()
+```
+
+All providers are drop-in replacements — same LangChain interface, just different base URLs and API keys.
 
 ### RAGSystem (`artist/knowledge/rag.py`)
 
-RAG = **Retrieval-Augmented Generation**. Instead of relying purely on what the LLM was trained on, RAG lets you inject relevant documents at query time.
+RAG = **Retrieval-Augmented Generation**. Lets you search your own documents at query time.
 
-How it works:
-1. **Indexing** (offline): You call `add_documents()` with your knowledge base. Each document is converted to a 1536-dimension vector via OpenAI embeddings and stored in Milvus.
-2. **Retrieval** (at query time): `search(query, k=5)` converts the query to a vector and finds the `k` most semantically similar documents in Milvus.
-3. The retrieved documents are passed to the agents as context.
+1. **Indexing** — `add_documents()` embeds text chunks and stores them in Milvus
+2. **Retrieval** — `search(query, k=5)` converts the query to a vector, finds the k most similar chunks
+
+The embedding provider is configurable (`EMBEDDING_PROVIDER=nim` or `openai`).
+
+### Knowledge Upload (`artist/api/endpoints/knowledge.py`)
+
+`POST /api/v1/knowledge/upload` accepts PDF, TXT, or MD files:
+1. Extracts text (uses `pypdf` for PDFs)
+2. Chunks text into ~1000-char overlapping segments
+3. Calls `rag.add_documents()` to embed and index into Milvus
 
 ### Celery Worker (`artist/worker/tasks.py`)
 
-When you `POST /workflow/execute`, the API does NOT run the workflow itself. It calls `execute_workflow_task.delay(...)` which:
-- Puts a message on the Redis queue
-- Returns a `task_id` immediately
-- A Celery worker process picks up the task and runs `OrchestrationEngine.execute_workflow()`
-- Progress is stored back in Redis so `/status/{task_id}` can report it
-
-This is why the API is non-blocking — a workflow can take minutes but the API responds in milliseconds.
-
-### AuthManager (`artist/security/auth.py`)
-
-- `get_password_hash(password)` — bcrypt hashes a password for storage
-- `verify_password(plain, hashed)` — verifies login attempt
-- `create_access_token(data)` — creates a signed JWT with an expiry
-- `verify_token(token)` — decodes and validates the JWT signature and expiry
-- `authenticate_user(username, password, db)` — looks up user in PostgreSQL, verifies password
-- `get_current_user(token, db)` — decodes JWT → looks up user in DB → returns user dict
-
-The `get_current_user` FastAPI dependency is what protects endpoints. Any endpoint with `Depends(get_current_user)` will return 401 if no valid token is provided.
+The main async task. Executes in a background Celery process:
+1. Retrieves conversation history from PostgreSQL
+2. Initialises RAGSystem + OrchestrationEngine
+3. Creates `WorkflowState` with history injected
+4. Runs the LangGraph workflow
+5. Saves the new conversation turn to PostgreSQL
 
 ### RLHF System (`artist/rlhf/`)
 
-The system can learn from user feedback over time:
-
-1. Users submit ratings/thumbs via `POST /api/v1/rlhf/feedback`
-2. Feedback is stored in the `workflow_executions.request_metadata` JSON column
-3. An admin triggers `POST /api/v1/rlhf/train` to start a training cycle
-4. `TrainingOrchestrator` collects feedback from DB, trains a `SimpleRewardModel` (TF-IDF features + RandomForest), saves it to `models/reward_model.pkl` via joblib
-5. Future runs can use the reward model to score and rank agent actions
-
-### SecureCodeSandbox (`artist/security/sandbox.py`)
-
-When the `code_execution` tool is used, code runs inside a **Docker container** with:
-- No network access (`network_disabled=True`)
-- Read-only filesystem
-- 128MB memory limit
-- Runs as `nobody` user
-- `no-new-privileges` security option
-- Auto-removed after execution
-
-Pre-execution, `_is_dangerous_code()` scans for dangerous imports and builtins.
+Users submit ratings → stored in DB → admin triggers training → `SimpleRewardModel` (TF-IDF + RandomForest) trains on feedback → saved to `models/reward_model.pkl`.
 
 ---
 
 ## 6. The Request Lifecycle
 
-Here is exactly what happens when you call `POST /api/v1/workflow/execute`:
-
 ```
-1. Request arrives
-   └─ LoggingMiddleware logs it
-   └─ SecurityMiddleware extracts JWT, sets request.state.user_id
-   └─ RateLimitMiddleware checks Redis: "rate_limit:user:alice" < 100 requests/hour
+1. POST /api/v1/workflow/execute  {"user_request": "..."}
+   └─ LoggingMiddleware, SecurityMiddleware, RateLimitMiddleware
+   └─ get_current_user validates JWT → looks up user in PostgreSQL
+   └─ execute_workflow_task.delay(...) pushes task to Redis
+   └─ Returns {"task_id": "abc123", ...}
 
-2. FastAPI routes to start_workflow()
-   └─ get_current_user dependency: decodes JWT → queries users table → returns user dict
-   └─ Pydantic validates WorkflowExecutionRequest (min_length, max_length on user_request)
-   └─ Prompt injection check (optional — integrate is_prompt_injection() here)
+2. Celery worker picks up task
+   └─ Retrieves conversation history from conversation_memory table
+   └─ Creates WorkflowState with history injected
 
-3. execute_workflow_task.delay(...) is called
-   └─ Celery serialises the task to JSON and pushes to Redis queue
-   └─ Returns task_id (UUID) immediately
+3. LangGraph graph runs
+   └─ PlannerAgent: classifies query → sets state["route"]
+   └─ (if complex) ResearchAgent:
+       ├─ asyncio.gather(kb_search, web_search)  ← parallel
+       └─ merges into state["retrieved_documents"]
+   └─ SynthesisAgent: LLM call with history + docs → summary
+   └─ FactCheckAgent: LLM verifies summary against sources
+       └─ if confidence < 0.7: cycles back to ResearchAgent
+   └─ FinalOutputAgent: structures the full response
 
-4. API responds: {"task_id": "...", "status_url": "...", "result_url": "..."}
+4. Result stored in Redis
+   └─ Conversation turn saved to PostgreSQL
 
-5. (Async, in Celery worker process)
-   └─ Worker picks up task from Redis
-   └─ Creates RAGSystem + OrchestrationEngine
-   └─ Calls rag_system.initialize() → connects to Milvus
-   └─ Calls orchestration_engine.initialize() → loads workflow definitions
-   └─ Creates WorkflowState with user_request, workflow_id, user_id
-   └─ Calls execute_workflow("default", initial_state)
-       └─ Builds LangGraph: research → synthesis → fact_check → final_output
-       └─ Invokes graph: state flows through each node
-           └─ ResearchAgent.execute(state) → searches Milvus → updates state
-           └─ SynthesisAgent.execute(state) → synthesises docs → updates state
-           └─ FactCheckAgent.execute(state) → scores result → updates state
-   └─ Returns final WorkflowState
-   └─ Stores result in Redis (via Celery result backend)
-
-6. Client polls GET /api/v1/workflow/status/{task_id}
-   └─ Returns {"status": "PROCESSING"} or {"status": "SUCCESS"}
-
-7. Client calls GET /api/v1/workflow/result/{task_id}
-   └─ Returns the full final WorkflowState as JSON
+5. Client polls GET /api/v1/workflow/result/{task_id}
+   └─ Returns full WorkflowState with final_output
 ```
 
 ---
 
 ## 7. Database Schema
 
-Six tables, all created by `migrations/versions/0001_initial_schema.py`:
+Seven tables, created by `migrations/versions/0001_initial_schema.py`:
 
 ```
 users
-├── id (PK)
-├── username (unique, indexed)
-├── email (unique, indexed)
-├── hashed_password
-├── full_name
-├── is_active
-├── is_superuser
-├── roles (JSON array, e.g. ["admin", "engineer"])
-└── created_at / updated_at
+├── id, username (unique), email (unique)
+├── hashed_password, full_name
+├── is_active, is_superuser
+├── roles (JSON array: ["admin", "engineer"])
+└── created_at, updated_at
+
+conversation_memory              ← long-term memory store
+├── id, user_id (indexed)
+├── role ("user" | "assistant")
+├── content (text)
+├── run_id (links to workflow_executions)
+└── created_at
 
 workflow_definitions
-├── id (PK, string — e.g. "default")
+├── id (string — e.g. "default")
 ├── name, description
-├── definition (JSON — nodes, edges, entry/end points)
-├── version, is_active
-└── created_by (FK → users.id)
+├── definition (JSON — nodes, edges)
+└── version, is_active, created_by
 
 workflow_executions
-├── id (PK, UUID string)
-├── task_id (unique — Celery task ID)
-├── workflow_id (FK → workflow_definitions.id, INDEXED)
-├── user_id (FK → users.id, INDEXED)
-├── user_request (text)
-├── request_metadata (JSON — also stores feedback array)
-├── status (pending/running/completed/failed)
-├── completed_steps (JSON array)
-├── intermediate_results (JSON)
-├── final_result (JSON)
-├── error_info (JSON)
-└── started_at / completed_at / execution_time
+├── id (UUID), task_id (Celery task ID)
+├── workflow_id, user_id
+├── user_request, request_metadata (JSON)
+├── status, completed_steps (JSON), intermediate_results (JSON)
+├── final_result (JSON), error_info (JSON)
+└── started_at, completed_at, execution_time
 
 agent_registry
-├── id (PK)
-├── name (unique)
-├── class_path (e.g. "artist.agents.research.ResearchAgent")
-├── description, configuration (JSON)
-└── is_active, version
+├── id, name (unique), class_path
+└── description, configuration (JSON), is_active
 
 tool_registry
-├── id (PK)
-├── name (unique)
-├── class_path, category
-├── configuration (JSON)
-└── is_active, version
+├── id, name (unique), class_path, category
+└── configuration (JSON), is_active
 
 audit_logs
-├── id (PK)
-├── user_id (FK → users.id)
-├── action (e.g. "submit_feedback", "login")
-├── resource_type, resource_id
-├── details (JSON)
+├── id, user_id, action
+├── resource_type, resource_id, details (JSON)
 ├── ip_address, user_agent
 └── timestamp
 
 system_metrics
-├── id (PK)
-├── metric_name, metric_value, metric_type
+├── id, metric_name, metric_value, metric_type
 ├── labels (JSON)
 └── timestamp
 ```
@@ -444,10 +483,10 @@ system_metrics
 
 ## 8. Security Model
 
-### Authentication Flow
+### Authentication
 ```
-Login → POST /api/v1/auth/login → JWT token (30 min expiry)
-All other requests → Authorization: Bearer <token> header
+POST /api/v1/auth/login → JWT (30 min expiry)
+All other requests → Authorization: Bearer <token>
 ```
 
 ### Role Hierarchy
@@ -457,110 +496,120 @@ admin
        └─ business_user
             └─ guest
 ```
-An `admin` implicitly has all permissions of all roles below them.
 
-### What each role can do
-| Role | Workflow Execute | View Results | RLHF Train | Admin Ops |
-|------|-----------------|-------------|------------|-----------|
+| Role | Execute Workflow | View Results | RLHF Train | Admin Ops |
+|---|---|---|---|---|
 | admin | Yes | Yes | Yes | Yes |
 | engineer | Yes | Yes | No | No |
 | business_user | Yes | Yes | No | No |
 | guest | No | Yes | No | No |
 
-### Security layers (defence in depth)
+### Defence in Depth
+
 1. **HTTPS** — HSTS header enforced in production
-2. **JWT** — stateless tokens, signed with SECRET_KEY, expire after 30 min
-3. **bcrypt** — passwords hashed with cost factor 12+
-4. **Rate limiting** — 100 requests/hour per user (Redis-backed)
-5. **RBAC** — role-based endpoint access
+2. **JWT** — stateless, signed with `SECRET_KEY`, 30 min expiry
+3. **bcrypt** — passwords hashed (direct `bcrypt` library, not passlib)
+4. **Rate limiting** — 100 req/hour per user, Redis-backed
+5. **RBAC** — role-based endpoint protection
 6. **Prompt injection guard** — regex patterns block known injection phrases
-7. **Docker sandbox** — code execution isolated in a container
-8. **CORS** — explicit origin whitelist, no wildcards
-9. **Security headers** — X-Frame-Options, X-Content-Type-Options, Referrer-Policy, etc.
+7. **Docker sandbox** — code execution in isolated container (no network, 128MB RAM)
+8. **CORS** — explicit origin whitelist, no wildcards with credentials
+9. **Security headers** — X-Frame-Options, X-Content-Type-Options, Referrer-Policy
 10. **Audit logs** — all sensitive actions written to `audit_logs` table
+11. **SECRET_KEY validation** — app refuses to start if key is < 32 chars or matches the old leaked default
 
 ---
 
 ## 9. Running Locally
 
 ### Prerequisites
-- Python 3.11+
-- Docker + Docker Compose
-- At least one LLM API key (OpenAI or Anthropic)
+- Docker Desktop running
+- At least one LLM API key
 
-### Step 1 — Environment
+### Step 1 — Clone and configure
 
 ```bash
+git clone https://github.com/AMANSINGH1674/A.R.T.I.S.T.git
 cd A.R.T.I.S.T
 cp .env.example .env
 ```
 
-Edit `.env` and fill in (minimum required):
-```bash
-SECRET_KEY=<python -c "import secrets; print(secrets.token_hex(32))">
-POSTGRES_PASSWORD=<strong password>
-REDIS_PASSWORD=<strong password>
-MINIO_ACCESS_KEY=<any string, min 3 chars>
-MINIO_SECRET_KEY=<any string, min 8 chars>
-OPENAI_API_KEY=sk-...
+Edit `.env` — minimum required:
+
+```env
+SECRET_KEY=<python3 -c "import secrets; print(secrets.token_hex(32))">
+POSTGRES_PASSWORD=a_strong_password
+REDIS_PASSWORD=another_strong_password
+MINIO_ACCESS_KEY=minio_user
+MINIO_SECRET_KEY=minio_password
+
+# Pick one LLM provider:
+DEFAULT_LLM_PROVIDER=groq
+DEFAULT_MODEL=llama-3.1-8b-instant
+GROQ_API_KEY=gsk_...           # free at console.groq.com
+
+# Embedding (NIM is default — requires NVIDIA_API_KEY)
+EMBEDDING_PROVIDER=nim
+NVIDIA_API_KEY=nvapi-...       # free credits at build.nvidia.com
 ```
 
 ### Step 2 — Start all services
 
 ```bash
-docker-compose up -d
+docker compose up --build -d
 ```
 
-This starts: PostgreSQL, Redis, Milvus, etcd, MinIO, and the ARTIST app itself.
+Starts: `artist-app`, `celery-worker`, `postgres`, `redis`, `milvus`, `etcd`, `minio`
 
-### Step 3 — Run migrations
+### Step 3 — Create your first user
 
 ```bash
-pip install alembic
-alembic upgrade head
+docker compose exec artist-app python3 -c "
+from artist.database.session import SessionLocal
+from artist.database.models import User
+from artist.security.auth import AuthManager
+db = SessionLocal()
+auth = AuthManager()
+user = User(
+    username='admin',
+    email='admin@example.com',
+    hashed_password=auth.get_password_hash('yourpassword'),
+    is_active=True,
+    is_superuser=True,
+    roles=['admin']
+)
+db.add(user)
+db.commit()
+print('User created successfully')
+"
 ```
 
-### Step 4 — Create your first user
+### Step 4 — Open the UI
 
-There is no registration endpoint yet. Insert directly:
+Go to **http://localhost:8000** → log in → start asking questions.
 
-```bash
-docker-compose exec postgres psql -U artist -d artist -c "
-INSERT INTO users (username, email, hashed_password, is_active, is_superuser, roles)
-VALUES (
-  'admin',
-  'admin@example.com',
-  '\$2b\$12\$your_bcrypt_hash_here',
-  true, true, '[\"admin\"]'
-);"
-```
+To upload documents to the knowledge base: click **"Upload Doc"** in the top right.
 
-To generate the hash:
-```bash
-python -c "from passlib.context import CryptContext; print(CryptContext(schemes=['bcrypt']).hash('yourpassword'))"
-```
-
-### Step 5 — Test it
+### Step 5 — Test via API
 
 ```bash
 # Login
-curl -X POST http://localhost:8000/api/v1/auth/login \
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "yourpassword"}'
+  -d '{"username":"admin","password":"yourpassword"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
-# Execute a workflow (use the token from above)
-curl -X POST http://localhost:8000/api/v1/workflow/execute \
-  -H "Authorization: Bearer <token>" \
+# Submit a question
+TASK=$(curl -s -X POST http://localhost:8000/api/v1/workflow/execute \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"user_request": "What are the main benefits of RAG systems?"}'
+  -d '{"user_request":"What are the latest AI breakthroughs in 2025?"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['task_id'])")
 
-# Check status
-curl http://localhost:8000/api/v1/workflow/status/<task_id> \
-  -H "Authorization: Bearer <token>"
-
-# Get result
-curl http://localhost:8000/api/v1/workflow/result/<task_id> \
-  -H "Authorization: Bearer <token>"
+# Wait ~15s then get result
+sleep 15
+curl -s http://localhost:8000/api/v1/workflow/result/$TASK \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 
 ---
@@ -568,40 +617,40 @@ curl http://localhost:8000/api/v1/workflow/result/<task_id> \
 ## 10. Environment Variables Reference
 
 | Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `SECRET_KEY` | **Yes** | none | JWT signing key. Min 32 chars. Generate with `secrets.token_hex(32)` |
-| `POSTGRES_PASSWORD` | **Yes** | none | PostgreSQL password |
-| `REDIS_PASSWORD` | **Yes** | none | Redis password |
-| `MINIO_ACCESS_KEY` | **Yes** | none | MinIO access key (username) |
-| `MINIO_SECRET_KEY` | **Yes** | none | MinIO secret key (password, min 8 chars) |
-| `OPENAI_API_KEY` | **Yes*** | none | OpenAI key. *Required unless using Anthropic |
-| `ANTHROPIC_API_KEY` | **Yes*** | none | Anthropic key. *Required unless using OpenAI |
-| `DATABASE_URL` | No | sqlite | Full Postgres URL. Required for production |
+|---|---|---|---|
+| `SECRET_KEY` | **Yes** | — | JWT signing key. Min 32 chars. |
+| `POSTGRES_PASSWORD` | **Yes** | — | PostgreSQL password |
+| `REDIS_PASSWORD` | **Yes** | — | Redis password |
+| `MINIO_ACCESS_KEY` | **Yes** | — | MinIO username |
+| `MINIO_SECRET_KEY` | **Yes** | — | MinIO password (min 8 chars) |
+| `DEFAULT_LLM_PROVIDER` | **Yes** | `groq` | `groq` \| `anthropic` \| `nim` \| `openai` |
+| `DEFAULT_MODEL` | **Yes** | `llama-3.1-8b-instant` | Model ID for the chosen provider |
+| `GROQ_API_KEY` | If using Groq | — | From console.groq.com (free) |
+| `ANTHROPIC_API_KEY` | If using Anthropic | — | From console.anthropic.com |
+| `NVIDIA_API_KEY` | If using NIM | — | From build.nvidia.com (free credits) |
+| `OPENAI_API_KEY` | If using OpenAI | — | From platform.openai.com |
+| `EMBEDDING_PROVIDER` | **Yes** | `nim` | `nim` \| `openai` |
+| `DATABASE_URL` | No | sqlite | Full PostgreSQL URL |
 | `REDIS_URL` | No | localhost | Full Redis URL including password |
-| `ENVIRONMENT` | No | `development` | `development` or `production` |
-| `DEBUG` | No | `false` | Enables API docs at `/docs`, hot reload |
-| `ALLOWED_ORIGINS` | No | `http://localhost:*` | Comma-separated CORS origins |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | No | `30` | JWT expiry |
+| `MILVUS_HOST` | No | `localhost` | Milvus hostname (use `milvus` in Docker) |
+| `ENVIRONMENT` | No | `development` | `development` \| `production` |
+| `DEBUG` | No | `false` | Enables `/docs` and hot reload |
+| `ALLOWED_ORIGINS` | No | `["http://localhost:3000","http://localhost:8000"]` | JSON array of allowed CORS origins |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | No | `30` | JWT token lifetime |
 | `MAX_REQUEST_LENGTH` | No | `10000` | Max chars in user_request |
-| `MILVUS_HOST` | No | `localhost` | Milvus hostname |
-| `MILVUS_PORT` | No | `19530` | Milvus port |
-| `LOG_LEVEL` | No | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `LOG_FORMAT` | No | `json` | `json` or `console` |
-| `RATE_LIMIT_REQUESTS` | No | `100` | Requests allowed per window |
+| `LOG_LEVEL` | No | `INFO` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
+| `RATE_LIMIT_REQUESTS` | No | `100` | Requests per window per user |
 | `RATE_LIMIT_WINDOW` | No | `3600` | Window size in seconds |
-| `ENABLE_CODE_EXECUTION` | No | `true` | Enable the Docker code sandbox |
-| `CODE_EXECUTION_TIMEOUT` | No | `30` | Max seconds for code execution |
-| `ENABLE_RLHF` | No | `false` | Enable RLHF training endpoints |
-| `LANGSMITH_API_KEY` | No | none | LangSmith tracing |
-| `SENTRY_DSN` | No | none | Sentry error tracking |
-| `GOOGLE_API_KEY` | No | none | Google Custom Search (web_search tool) |
-| `GOOGLE_SEARCH_ENGINE_ID` | No | none | Google Custom Search engine ID |
+| `GOOGLE_API_KEY` | No | — | Google Custom Search (DuckDuckGo used as free fallback) |
+| `GOOGLE_SEARCH_ENGINE_ID` | No | — | Google CSE ID |
+| `LANGSMITH_API_KEY` | No | — | LangSmith tracing |
+| `SENTRY_DSN` | No | — | Sentry error tracking |
 
 ---
 
 ## 11. API Reference
 
-All endpoints except `/health`, `/api/v1/monitoring/*`, and `/api/v1/auth/login` require:
+All endpoints except `/health` and `/api/v1/auth/login` require:
 ```
 Authorization: Bearer <jwt_token>
 ```
@@ -609,50 +658,70 @@ Authorization: Bearer <jwt_token>
 ### Authentication
 
 | Method | Path | Body | Returns |
-|--------|------|------|---------|
-| POST | `/api/v1/auth/login` | `{username, password}` | `{access_token, token_type, expires_in}` |
+|---|---|---|---|
+| POST | `/api/v1/auth/login` | `{username, password}` | `{access_token, token_type}` |
 | GET | `/api/v1/auth/profile` | — | Current user object |
 | POST | `/api/v1/auth/logout` | — | `{message}` |
 
 ### Workflows
 
 | Method | Path | Body | Returns |
-|--------|------|------|---------|
+|---|---|---|---|
 | POST | `/api/v1/workflow/execute` | `{user_request, workflow_id?, metadata?}` | `{task_id, status_url, result_url}` |
 | GET | `/api/v1/workflow/status/{task_id}` | — | `{status, info}` |
-| GET | `/api/v1/workflow/result/{task_id}` | — | Full `WorkflowState` JSON |
+| GET | `/api/v1/workflow/result/{task_id}` | — | Full WorkflowState with `final_output` |
 
-**Workflow status values:** `PENDING` → `PROCESSING` → `SUCCESS` / `FAILURE`
+**Result shape:**
+```json
+{
+  "status": "completed",
+  "result": {
+    "final_output": {
+      "summary": "...",
+      "key_points": ["..."],
+      "confidence": 0.88,
+      "verified": true,
+      "sources": ["https://..."],
+      "concerns": [],
+      "recommendation": "approved",
+      "metadata": {
+        "route_taken": "complex_research",
+        "research_iterations": 1,
+        "kb_results_found": 2,
+        "web_results_found": 5
+      }
+    }
+  }
+}
+```
 
-### Agents & Tools
-
-| Method | Path | Returns |
-|--------|------|---------|
-| GET | `/api/v1/agents/list` | List of all agents |
-| GET | `/api/v1/agents/{name}` | Single agent info |
-| GET | `/api/v1/agents/{name}/status` | Agent health metrics |
-| GET | `/api/v1/tools/list` | List of all tools |
-| GET | `/api/v1/tools/{name}` | Single tool info |
-| GET | `/api/v1/tools/{name}/status` | Tool health metrics |
-
-### Monitoring (public)
-
-| Method | Path | Returns |
-|--------|------|---------|
-| GET | `/health` | Component health (app-level) |
-| GET | `/api/v1/monitoring/health` | DB + Redis health check |
-| GET | `/api/v1/monitoring/metrics` | Prometheus metrics (text) |
-| GET | `/api/v1/monitoring/status` | Version, uptime, environment |
-
-### RLHF (admin only for training)
+### Knowledge Base
 
 | Method | Path | Body | Returns |
-|--------|------|------|---------|
-| POST | `/api/v1/rlhf/feedback` | `{workflow_id, run_id, feedback_type, rating?}` | `{status}` |
-| POST | `/api/v1/rlhf/train` | `{training_type, agent_name?}` | `{status, message}` |
+|---|---|---|---|
+| POST | `/api/v1/knowledge/upload` | `file` (multipart) | `{filename, chunks_indexed, size_mb}` |
+| GET | `/api/v1/knowledge/stats` | — | `{status, collection}` |
+
+Supported file types: `.pdf`, `.txt`, `.md` (max 20 MB)
+
+### RLHF
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | `/api/v1/rlhf/feedback/feedback` | `{workflow_id, run_id, feedback_type, rating?}` | `{status}` |
+| POST | `/api/v1/rlhf/train` | `{training_type}` | `{status}` |
 | GET | `/api/v1/rlhf/training/status` | — | Training status |
 
-**feedback_type values:** `thumbs_up`, `thumbs_down`, `rating` (1–5), `detailed`, `comparison`
+`feedback_type` values: `thumbs_up`, `thumbs_down`, `rating` (1–5), `detailed`, `comparison`
+
+### Monitoring
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/health` | Component health |
+| GET | `/api/v1/monitoring/health` | DB + Redis health |
+| GET | `/api/v1/monitoring/metrics` | Prometheus metrics (text) |
+| GET | `/api/v1/monitoring/status` | Version, uptime, environment |
 
 ---
 
@@ -684,13 +753,9 @@ class MyAgent(BaseAgent):
         return state
 ```
 
-2. Register it in `engine.py` `load_workflow_definitions()` by adding it to a workflow's `nodes` and `edges`.
-
-3. Or insert it into the `agent_registry` DB table so it is loaded dynamically.
+2. Register it in `engine.py` — add a node and connect it with edges or conditional edges.
 
 ### Adding a new Tool
-
-1. Create `artist/tools/my_tool.py`:
 
 ```python
 from .base import BaseTool
@@ -700,242 +765,181 @@ class MyTool(BaseTool):
         super().__init__(name="my_tool", description="Does X")
 
     async def execute(self, input: str) -> dict:
-        # Your logic
         return {"result": "..."}
 ```
 
-2. Insert into the `tool_registry` table, or instantiate and attach to an agent with `agent.add_tool(MyTool())`.
+Pass it to an agent: `ResearchAgent(rag_system=rag, web_search_tool=MyTool())`
 
-### Adding a new Workflow
+### Adding a conditional route
 
-Insert into `workflow_definitions`:
-```sql
-INSERT INTO workflow_definitions (id, name, definition, is_active)
-VALUES (
-  'my_workflow',
-  'My Custom Workflow',
-  '{
-    "nodes": ["research", "my_agent", "fact_check", "final_output"],
-    "edges": [["research", "my_agent"], ["my_agent", "fact_check"], ["fact_check", "final_output"]],
-    "entry_point": "research",
-    "end_point": "final_output"
-  }',
-  true
-);
+In `engine.py`, add a new routing function and use `add_conditional_edges`:
+
+```python
+def _my_router(state: WorkflowState) -> str:
+    if some_condition(state):
+        return "agent_a"
+    return "agent_b"
+
+workflow.add_conditional_edges(
+    "some_node",
+    _my_router,
+    {"agent_a": "agent_a", "agent_b": "agent_b"}
+)
 ```
 
-Then call it with: `POST /workflow/execute` with `"workflow_id": "my_workflow"`.
+### Switching LLM provider at runtime
 
-### Adding a new User Role
+Just change `.env` and restart:
+```bash
+# Change provider
+DEFAULT_LLM_PROVIDER=anthropic
+DEFAULT_MODEL=claude-3-5-haiku-20241022
+ANTHROPIC_API_KEY=sk-ant-...
 
-Edit `artist/security/rbac.py`:
-```python
-class Role:
-    ANALYST = "analyst"   # add here
-
-ROLES_HIERARCHY = {
-    Role.ADMIN: [Role.ENGINEER, Role.ANALYST, Role.BUSINESS_USER, Role.GUEST],
-    Role.ANALYST: [Role.GUEST],
-    ...
-}
-```
-
-Then protect endpoints with:
-```python
-from ...security.rbac import require_roles, Role
-
-@router.post("/sensitive")
-@require_roles([Role.ADMIN, Role.ANALYST])
-async def sensitive_endpoint(current_user = Depends(get_current_user)):
-    ...
+docker compose up -d --force-recreate artist-app celery-worker
 ```
 
 ---
 
 ## 13. Observability & Monitoring
 
-### Prometheus Metrics
+### Prometheus Metrics (`GET /api/v1/monitoring/metrics`)
 
-Available at `GET /api/v1/monitoring/metrics`. Key metrics:
-
-| Metric | Type | Labels |
-|--------|------|--------|
-| `artist_workflow_executions_total` | Counter | `workflow_id`, `status`, `user_id` |
-| `artist_workflow_duration_seconds` | Histogram | `workflow_id` |
-| `artist_agent_executions_total` | Counter | `agent_name`, `status` |
-| `artist_agent_duration_seconds` | Histogram | `agent_name` |
-| `artist_tool_executions_total` | Counter | `tool_name`, `status` |
-| `artist_active_workflows` | Gauge | — |
-| `artist_feedback_submissions_total` | Counter | `feedback_type`, `rating` |
-| `artist_rlhf_training_cycles_total` | Counter | `training_type`, `status` |
-
-### Grafana Dashboard
-
-Import `grafana/artist-dashboard.json` into your Grafana instance.
-Configure it to scrape `http://artist-app:8000/api/v1/monitoring/metrics`.
-
-### LangSmith Tracing
-
-Set `LANGSMITH_API_KEY` in `.env`. Every LLM call, agent execution, and tool use will appear at [smith.langchain.com](https://smith.langchain.com) in your project.
+| Metric | Type |
+|---|---|
+| `artist_workflow_executions_total` | Counter |
+| `artist_workflow_duration_seconds` | Histogram |
+| `artist_agent_executions_total` | Counter |
+| `artist_agent_duration_seconds` | Histogram |
+| `artist_active_workflows` | Gauge |
+| `artist_feedback_submissions_total` | Counter |
 
 ### Structured Logs
 
-All logs are JSON (in production). Each log entry includes:
-- `timestamp`, `level`, `event`
-- `request_id` — correlation ID for tracing a request across logs
-- `user_id`, `method`, `path`, `status_code`, `duration_ms`
+All logs are JSON in production. Each entry includes `timestamp`, `level`, `event`, `request_id`, `user_id`, `duration_ms`.
 
-To view logs: `docker-compose logs -f artist-app`
+```bash
+docker compose logs -f artist-app
+docker compose logs -f celery-worker
+```
+
+### LangSmith
+
+Set `LANGSMITH_API_KEY` in `.env`. Every LLM call and agent execution will be visible at [smith.langchain.com](https://smith.langchain.com).
 
 ---
 
 ## 14. Production Deployment
 
-### Docker Compose (single server)
+### Docker Compose
 
 ```bash
-# Set all env vars in .env, then:
-docker-compose up -d
-
-# Run migrations
-docker-compose exec artist-app alembic upgrade head
-
-# Check health
+docker compose up -d
 curl http://localhost:8000/health
 ```
 
-### Kubernetes
-
-```bash
-# Create secrets
-kubectl create secret generic artist-secrets \
-  --from-literal=secret-key="$(python -c 'import secrets; print(secrets.token_hex(32))')" \
-  --from-literal=database-url="postgresql://artist:PASSWORD@postgres:5432/artist" \
-  --from-literal=openai-api-key="sk-..."
-
-# Deploy
-kubectl apply -f k8s/deployment.yaml
-```
-
-### Scaling
-
-- **API** — scale horizontally: `docker-compose up --scale artist-app=3`
-- **Workers** — run more Celery workers: `celery -A artist.worker.celery_app worker --concurrency=4`
-- **Database** — use a managed Postgres (RDS, Cloud SQL, Supabase) for production
-- **Milvus** — Milvus supports a distributed cluster mode for large-scale vector search
-
 ### Production checklist
 
-- [ ] `SECRET_KEY` is randomly generated and stored in a secrets manager (not `.env`)
-- [ ] `DEBUG=false` and `ENVIRONMENT=production`
-- [ ] `ALLOWED_ORIGINS` set to your actual domain(s)
-- [ ] All passwords are random and not shared between services
-- [ ] TLS/HTTPS terminated at load balancer or nginx upstream
-- [ ] `alembic upgrade head` run before first deploy
-- [ ] Grafana dashboard imported and alerts configured
+- [ ] `SECRET_KEY` randomly generated, stored in secrets manager
+- [ ] `DEBUG=false`, `ENVIRONMENT=production`
+- [ ] `ALLOWED_ORIGINS` set to your actual domain(s) as JSON array
+- [ ] All passwords random and unique per service
+- [ ] TLS terminated at load balancer or nginx
 - [ ] `SENTRY_DSN` set for error tracking
-- [ ] Regular database backups configured
+- [ ] Regular PostgreSQL backups configured
+- [ ] Prometheus/Grafana scraping metrics endpoint
 
 ---
 
 ## 15. Testing
 
 ```bash
-# Install test dependencies
-pip install pytest pytest-asyncio
-
 # Run all tests
 pytest
 
-# Run with coverage
+# With coverage
 pytest --cov=artist --cov-report=html
 open htmlcov/index.html
 
-# Run a specific test
+# Specific test class
 pytest tests/test_basic.py::TestAuthManager -v
 ```
 
-### Test structure
-
 | Test Class | What it covers |
-|-----------|----------------|
-| `TestWorkflowState` | State creation, metadata storage |
-| `TestOrchestrationEngine` | Engine init, workflow definition loading |
-| `TestAgents` | Research/synthesis/fact-check execution, failure handling |
-| `TestAuthManager` | Password hashing, JWT create/verify/expire, DB lookup, inactive user |
-| `TestPromptGuard` | Injection detection patterns, sanitisation |
-| `TestRLHF` | Reward model training, feedback conversion, untrained defaults |
-
-Tests never hit a real database or Redis — they mock dependencies.
+|---|---|
+| `TestWorkflowState` | State creation, new fields (route, iteration count, memory) |
+| `TestOrchestrationEngine` | Engine init, graph compilation |
+| `TestAgents` | Planner, research, synthesis, fact-check, final output |
+| `TestAuthManager` | Password hashing, JWT create/verify/expire |
+| `TestPromptGuard` | Injection detection |
+| `TestRLHF` | Reward model training, feedback conversion |
 
 ---
 
 ## 16. Common Problems & Fixes
 
-**App fails to start with `SECRET_KEY validation error`**
-→ You haven't set `SECRET_KEY` in `.env`. Generate one:
+**App fails to start: `SECRET_KEY validation error`**
+→ Set `SECRET_KEY` in `.env` (min 32 chars):
 ```bash
-python -c "import secrets; print(secrets.token_hex(32))"
+python3 -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-**`Connection refused` to PostgreSQL**
-→ Run `docker-compose up -d postgres` and wait for the healthcheck to pass before starting the app.
+**`DEFAULT_LLM_PROVIDER=groq but GROQ_API_KEY is not set`**
+→ Add your Groq API key to `.env` and restart the containers.
 
-**`Authentication failed` on Redis**
-→ `REDIS_URL` in `.env` must include the password: `redis://:YOUR_PASSWORD@localhost:6379`
+**`The model X does not exist or you do not have access`**
+→ The model ID is wrong for the provider. Check:
+- Groq models: `llama-3.1-8b-instant`, `llama-3.3-70b-versatile`, `mixtral-8x7b-32768`
+- NIM models: `meta/llama-3.1-8b-instruct`
+- Anthropic models: `claude-3-5-haiku-20241022`
 
-**Milvus takes too long / times out on startup**
-→ Milvus depends on etcd and MinIO. Start `docker-compose up -d etcd minio` first, wait 10 seconds, then `docker-compose up -d milvus`.
+**Web search returns 0 results**
+→ Verify `ddgs` is installed: `docker compose exec artist-app pip show ddgs`
+→ DuckDuckGo may rate-limit briefly — try again in a minute.
 
-**Celery tasks stuck in `PENDING`**
-→ The Celery worker isn't running. Start it:
-```bash
-celery -A artist.worker.celery_app worker --loglevel=info
-```
+**Milvus fails / embedding errors**
+→ If `EMBEDDING_PROVIDER=nim` but `NVIDIA_API_KEY` is not set, the app won't start.
+→ Switch to `EMBEDDING_PROVIDER=openai` with an OpenAI key, or get a free NIM key at build.nvidia.com.
 
-**`Module not found: artist`**
-→ `PYTHONPATH` is not set. Run from the project root:
-```bash
-PYTHONPATH=. pytest
-# or
-PYTHONPATH=. python -m artist.main
-```
+**Celery task stuck in PENDING**
+→ Celery worker isn't running: `docker compose up -d celery-worker`
+
+**`pydantic_settings error: error parsing allowed_origins`**
+→ `ALLOWED_ORIGINS` must be valid JSON: `["http://localhost:3000","http://localhost:8000"]`
 
 **Rate limit hit (429)**
-→ You've exceeded 100 requests per hour. Wait or increase `RATE_LIMIT_REQUESTS` in `.env`.
+→ Increase `RATE_LIMIT_REQUESTS` in `.env` or wait for the window to reset.
 
-**JWT `Token has expired`**
-→ Get a new token via `POST /api/v1/auth/login`. Increase `ACCESS_TOKEN_EXPIRE_MINUTES` if needed.
+**Login succeeds but questions fail**
+→ Check `docker compose logs celery-worker` for errors — most issues are LLM API keys or Milvus connectivity.
 
-**Feedback not saving to DB**
-→ This was a known bug (in-place JSON mutation not tracked by SQLAlchemy). It was fixed with `flag_modified()` in `rlhf/feedback.py`.
-
-**`COPY ./static` fails in Docker build**
-→ The `static/` directory must exist. It does in this repo (`static/index.html`). If you deleted it, create it: `mkdir static`.
+**`Connection refused` to PostgreSQL or Redis**
+→ Run `docker compose ps` to check all services are healthy before the app starts.
 
 ---
 
 ## 17. Glossary
 
 | Term | Meaning |
-|------|---------|
-| **Agent** | An autonomous AI module that does one specific job (research, synthesis, etc.) |
-| **Workflow** | A defined sequence of agents connected as a graph |
-| **WorkflowState** | The shared data structure passed between agents like a baton in a relay race |
-| **RAG** | Retrieval-Augmented Generation — fetching relevant documents to give an LLM better context |
+|---|---|
+| **Agent** | An autonomous AI module that does one specific job |
+| **Cyclic Graph** | A workflow graph where execution can loop back to earlier nodes |
+| **Dynamic Routing** | The planner decides at runtime which agents to run for a given query |
+| **WorkflowState** | The shared TypedDict passed between agents like a baton |
+| **RAG** | Retrieval-Augmented Generation — injecting relevant documents into LLM context |
 | **Milvus** | Vector database — stores embeddings and finds semantically similar ones |
-| **Embedding** | A list of ~1500 numbers that represents the "meaning" of a piece of text |
+| **Embedding** | A list of ~1000 numbers representing the semantic meaning of a piece of text |
 | **LangGraph** | Library for building stateful multi-agent workflows as directed graphs |
-| **Celery** | Task queue system — lets you run work asynchronously in background worker processes |
-| **JWT** | JSON Web Token — a signed, self-contained authentication token |
-| **bcrypt** | A password hashing algorithm designed to be slow and resist brute-force attacks |
-| **RBAC** | Role-Based Access Control — what you can do depends on your role (admin/engineer/etc.) |
-| **RLHF** | Reinforcement Learning from Human Feedback — the system improves based on user ratings |
-| **Reward Model** | A model trained to predict how good an agent's output is, based on past human ratings |
-| **Prometheus** | Time-series metrics database — collects and stores numeric measurements |
-| **Grafana** | Dashboard tool that visualises Prometheus metrics |
-| **LangSmith** | Debugging and tracing platform for LangChain/LangGraph applications |
-| **Alembic** | Database migration tool for SQLAlchemy — manages schema changes over time |
-| **structlog** | Python logging library that outputs structured JSON instead of plain text |
-| **Circuit Breaker** | A pattern that stops calling a failing service temporarily to prevent cascade failures |
-| **MinIO** | Open-source S3-compatible object storage — used by Milvus to store vector data |
+| **Conditional Edge** | A graph edge where the next node is determined by a routing function |
+| **Long-term Memory** | Conversation history stored in PostgreSQL and injected into new sessions |
+| **Celery** | Task queue — runs workflows asynchronously in background worker processes |
+| **DuckDuckGo Search** | Free web search used when no Google API key is configured |
+| **JWT** | JSON Web Token — signed, self-contained authentication token |
+| **bcrypt** | Password hashing algorithm designed to resist brute-force |
+| **RBAC** | Role-Based Access Control — permissions tied to user roles |
+| **RLHF** | Reinforcement Learning from Human Feedback — system improves from user ratings |
+| **Reward Model** | sklearn model trained to predict how good an agent output is |
+| **Prometheus** | Time-series metrics database |
+| **structlog** | Python logging library that outputs structured JSON |
+| **MinIO** | S3-compatible object storage used by Milvus |
+| **Alembic** | Database migration tool for SQLAlchemy |
